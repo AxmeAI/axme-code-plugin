@@ -13,13 +13,6 @@ In Claude Code:
 /plugin install axme-code@axmeai-axme-code-plugin
 ```
 
-Or via CLI:
-
-```bash
-claude plugin marketplace add AxmeAI/axme-code-plugin
-claude plugin install axme-code@axmeai-axme-code-plugin
-```
-
 ## What it does
 
 Persistent memory, architectural decisions, and safety guardrails for Claude Code. Your agent starts every session with full project context.

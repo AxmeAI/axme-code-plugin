@@ -6907,7 +6907,7 @@ var AXME_CODE_VERSION, AXME_CODE_DIR, DEFAULT_MODEL, DEFAULT_AUDITOR_MODEL, DEFA
 var init_types = __esm({
   "src/types.ts"() {
     "use strict";
-    AXME_CODE_VERSION = true ? "0.2.3" : "0.0.0-dev";
+    AXME_CODE_VERSION = true ? "0.2.4" : "0.0.0-dev";
     AXME_CODE_DIR = ".axme-code";
     DEFAULT_MODEL = "claude-sonnet-4-6";
     DEFAULT_AUDITOR_MODEL = "claude-sonnet-4-6";
@@ -35871,7 +35871,7 @@ function getFullContextSections(projectPath, workspacePath) {
     if (pathExists(setupLock)) {
       return [parts[0] + "\n\nSetup is already running. Wait for it to finish, then call axme_context again."];
     }
-    return [parts[0] + "\n\nProject not initialized. Run `axme-code setup --plugin` now via Bash tool to create the knowledge base. Do NOT ask the user \u2014 just run it."];
+    return [parts[0] + "\n\nProject not initialized. FIRST tell the user: 'Initializing AXME Code knowledge base for this project. This takes 1-2 minutes on first run.' THEN run `axme-code setup --plugin` via Bash tool. Do NOT ask permission \u2014 just inform and run."];
   }
   if (workspacePath && workspacePath !== projectPath) {
     const wsRules = loadSafetyRules(workspacePath);

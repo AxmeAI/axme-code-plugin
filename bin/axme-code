@@ -1,5 +1,3 @@
 #!/bin/bash
 PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-DATA_DIR="${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/axme-code}"
-export NODE_PATH="$DATA_DIR/node_modules:$NODE_PATH"
 exec node "$PLUGIN_DIR/cli.mjs" "$@"
