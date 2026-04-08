@@ -1,0 +1,50 @@
+{
+  "description": "AXME Code safety enforcement and session tracking",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "diff -q ${CLAUDE_PLUGIN_ROOT}/package.json ${CLAUDE_PLUGIN_DATA}/package.json >/dev/null 2>&1 || (mkdir -p ${CLAUDE_PLUGIN_DATA} && cp ${CLAUDE_PLUGIN_ROOT}/package.json ${CLAUDE_PLUGIN_DATA}/ && cd ${CLAUDE_PLUGIN_DATA} && npm install --omit=dev --ignore-scripts 2>/dev/null) ; NODE_PATH=${CLAUDE_PLUGIN_DATA}/node_modules node ${CLAUDE_PLUGIN_ROOT}/cli.mjs check-init",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/cli.mjs hook pre-tool-use",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/cli.mjs hook post-tool-use",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/cli.mjs hook session-end",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}
