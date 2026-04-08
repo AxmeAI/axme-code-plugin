@@ -6907,7 +6907,7 @@ var AXME_CODE_VERSION, AXME_CODE_DIR, DEFAULT_MODEL, DEFAULT_AUDITOR_MODEL, DEFA
 var init_types = __esm({
   "src/types.ts"() {
     "use strict";
-    AXME_CODE_VERSION = true ? "0.2.5" : "0.0.0-dev";
+    AXME_CODE_VERSION = true ? "0.2.6" : "0.0.0-dev";
     AXME_CODE_DIR = ".axme-code";
     DEFAULT_MODEL = "claude-sonnet-4-6";
     DEFAULT_AUDITOR_MODEL = "claude-sonnet-4-6";
@@ -11665,7 +11665,10 @@ function questionsContext(projectPath) {
     "",
     ...open.map((q) => `- **${q.id}**: ${q.question}${q.context ? ` (context: ${q.context})` : ""}`),
     "",
-    "Use axme_answer_question(id, answer) to respond."
+    "For each question: show it to the user, get their answer, then IMMEDIATELY execute the action",
+    "(e.g. axme_save_decision with action supersede/remove, axme_update_safety, etc.).",
+    "After executing, call axme_answer_question(id, answer) to mark as processed.",
+    "Do NOT just record the answer \u2014 act on it in this session."
   ];
   return lines.join("\n");
 }
