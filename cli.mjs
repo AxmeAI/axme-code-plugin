@@ -2767,7 +2767,7 @@ var AXME_CODE_VERSION, AXME_CODE_DIR, DEFAULT_MODEL, DEFAULT_AUDITOR_MODEL, DEFA
 var init_types = __esm({
   "src/types.ts"() {
     "use strict";
-    AXME_CODE_VERSION = true ? "0.2.4" : "0.0.0-dev";
+    AXME_CODE_VERSION = true ? "0.2.5" : "0.0.0-dev";
     AXME_CODE_DIR = ".axme-code";
     DEFAULT_MODEL = "claude-sonnet-4-6";
     DEFAULT_AUDITOR_MODEL = "claude-sonnet-4-6";
@@ -5367,14 +5367,26 @@ var init_cost_extractor = __esm({
 });
 
 // src/utils/agent-options.ts
+import { execSync as execSync2 } from "node:child_process";
+function findClaudePath() {
+  if (_claudePath !== void 0) return _claudePath || void 0;
+  try {
+    _claudePath = execSync2("which claude", { encoding: "utf-8" }).trim();
+  } catch {
+    _claudePath = "";
+  }
+  return _claudePath || void 0;
+}
 function buildAgentQueryOptions(base, role) {
   const tools = ROLE_TOOLS[role];
+  const claudePath = findClaudePath();
   return {
     cwd: base.cwd,
     model: base.model,
     systemPrompt: base.agentPrompt ? { type: "preset", preset: "claude_code", append: base.agentPrompt } : { type: "preset", preset: "claude_code" },
     settingSources: ["project"],
     ...base.maxTurns !== void 0 ? { maxTurns: base.maxTurns } : {},
+    ...claudePath ? { pathToClaudeCodeExecutable: claudePath } : {},
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     allowedTools: tools.allowed,
@@ -5382,7 +5394,7 @@ function buildAgentQueryOptions(base, role) {
     includePartialMessages: true
   };
 }
-var ROLE_TOOLS;
+var _claudePath, ROLE_TOOLS;
 var init_agent_options = __esm({
   "src/utils/agent-options.ts"() {
     "use strict";
@@ -39148,21 +39160,7 @@ ${lines.join("\n")}` }] };
           "- `worklog_entry`: narrative summary (5-15 lines markdown)",
           "- `startup_text`: ready-to-paste text for next session",
           "",
-          "## Step 3: Verify AXME Code Functionality (ALPHA - MANDATORY)",
-          "",
-          "AXME Code is in alpha. Before finalizing, verify that core functionality worked correctly in this session.",
-          "Run these checks and report results to the user:",
-          "",
-          "1. **Context loading**: call `axme_status` - verify it returns data (not error)",
-          "2. **Saves**: if you saved any memories/decisions in this session, verify files exist on disk:",
-          "   - `ls .axme-code/decisions/` and `ls .axme-code/memory/` in the target storage",
-          "3. **Pending audits**: check `axme_context` output for 'Pending audits' section - report if any are stuck",
-          "4. **Safety hooks**: verify `.claude/settings.json` has PreToolUse + PostToolUse + SessionEnd hooks configured",
-          "5. **Session tracking**: verify current session meta exists: `ls .axme-code/sessions/` should have current session dir",
-          "",
-          "Report results as a table to the user. If anything is broken, flag it BEFORE calling finalize_close.",
-          "",
-          "## Step 4: Call `axme_finalize_close`",
+          "## Step 3: Call `axme_finalize_close`",
           "",
           "Pass everything in one call. MCP writes all files atomically.",
           "After it returns:",
@@ -42142,7 +42140,11 @@ async function initProjectWithLLM(projectPath, opts) {
   log(`  [${projectName}] Scanners complete, processing results...`);
   for (const settled of scanners) {
     if (settled.status === "rejected") {
-      errors.push(`LLM scan failed: ${settled.reason?.message ?? settled.reason}`);
+      const err = settled.reason;
+      const msg = err?.message ?? String(err);
+      const stack = err?.stack ? `
+${err.stack.split("\n").slice(0, 3).join("\n")}` : "";
+      errors.push(`LLM scan failed: ${msg}${stack}`);
       continue;
     }
     const val = settled.value;
