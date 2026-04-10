@@ -1277,7 +1277,7 @@ var require_errors = __commonJS({
     exports.keyword$DataError = {
       message: ({ keyword, schemaType }) => schemaType ? (0, codegen_1.str)`"${keyword}" keyword must be ${schemaType} ($data)` : (0, codegen_1.str)`"${keyword}" keyword is invalid ($data)`
     };
-    function reportError(cxt, error48 = exports.keywordError, errorPaths, overrideAllErrors) {
+    function reportError2(cxt, error48 = exports.keywordError, errorPaths, overrideAllErrors) {
       const { it } = cxt;
       const { gen, compositeRule, allErrors } = it;
       const errObj = errorObjectCode(cxt, error48, errorPaths);
@@ -1287,7 +1287,7 @@ var require_errors = __commonJS({
         returnErrors(it, (0, codegen_1._)`[${errObj}]`);
       }
     }
-    exports.reportError = reportError;
+    exports.reportError = reportError2;
     function reportExtraError(cxt, error48 = exports.keywordError, errorPaths) {
       const { it } = cxt;
       const { gen, compositeRule, allErrors } = it;
@@ -6907,7 +6907,7 @@ var AXME_CODE_VERSION, AXME_CODE_DIR, DEFAULT_MODEL, DEFAULT_AUDITOR_MODEL, DEFA
 var init_types = __esm({
   "src/types.ts"() {
     "use strict";
-    AXME_CODE_VERSION = true ? "0.2.6" : "0.0.0-dev";
+    AXME_CODE_VERSION = true ? "0.2.7" : "0.0.0-dev";
     AXME_CODE_DIR = ".axme-code";
     DEFAULT_MODEL = "claude-sonnet-4-6";
     DEFAULT_AUDITOR_MODEL = "claude-sonnet-4-6";
@@ -6977,6 +6977,9 @@ function logDecisionSuperseded(projectPath, sessionId, oldId, newId) {
 }
 function logMemorySaved(projectPath, sessionId, slug, type2) {
   logEvent(projectPath, "memory_saved", sessionId, { slug, type: type2 });
+}
+function logSafetyUpdated(projectPath, sessionId, ruleType, value) {
+  logEvent(projectPath, "safety_updated", sessionId, { ruleType, value });
 }
 var WORKLOG_FILE;
 var init_worklog = __esm({
@@ -12052,8 +12055,11 @@ __export(safety_tools_exports, {
   showSafetyTool: () => showSafetyTool,
   updateSafetyTool: () => updateSafetyTool
 });
-function updateSafetyTool(projectPath, ruleType, value) {
+function updateSafetyTool(projectPath, ruleType, value, sessionId) {
   updateSafetyRule(projectPath, ruleType, value);
+  if (sessionId) {
+    logSafetyUpdated(projectPath, sessionId, ruleType, value);
+  }
   return { updated: true, ruleType, value };
 }
 function showSafetyTool(projectPath) {
@@ -12066,12 +12072,284 @@ var init_safety_tools = __esm({
   "src/tools/safety-tools.ts"() {
     "use strict";
     init_safety();
+    init_worklog();
+  }
+});
+
+// src/telemetry.ts
+var telemetry_exports = {};
+__export(telemetry_exports, {
+  _getLastVersionFilePath: () => _getLastVersionFilePath,
+  _getMidFilePath: () => _getMidFilePath,
+  _getQueueFilePath: () => _getQueueFilePath,
+  _resetForTests: () => _resetForTests,
+  classifyError: () => classifyError,
+  detectSource: () => detectSource,
+  getOrCreateMid: () => getOrCreateMid,
+  isCI: () => isCI,
+  isTelemetryDisabled: () => isTelemetryDisabled,
+  readLastVersion: () => readLastVersion,
+  reportError: () => reportError,
+  sendStartupEvents: () => sendStartupEvents,
+  sendTelemetry: () => sendTelemetry,
+  sendTelemetryBlocking: () => sendTelemetryBlocking,
+  writeLastVersion: () => writeLastVersion
+});
+import { homedir as homedir2 } from "node:os";
+import { join as join17 } from "node:path";
+import {
+  existsSync as existsSync5,
+  readFileSync as readFileSync10,
+  writeFileSync as writeFileSync3,
+  mkdirSync as mkdirSync2,
+  appendFileSync as appendFileSync2,
+  unlinkSync as unlinkSync4,
+  chmodSync
+} from "node:fs";
+import { randomBytes } from "node:crypto";
+function getStateDir() {
+  return process.env.AXME_TELEMETRY_STATE_DIR || join17(homedir2(), ".local", "share", "axme-code");
+}
+function getMidFile() {
+  return join17(getStateDir(), "machine-id");
+}
+function getLastVersionFile() {
+  return join17(getStateDir(), "last-version");
+}
+function getQueueFile() {
+  return join17(getStateDir(), "telemetry-queue.jsonl");
+}
+function isTelemetryDisabled() {
+  return !!(process.env.AXME_TELEMETRY_DISABLED || process.env.DO_NOT_TRACK);
+}
+function detectSource() {
+  if (cachedSource) return cachedSource;
+  cachedSource = process.env.CLAUDE_PLUGIN_ROOT ? "plugin" : "binary";
+  return cachedSource;
+}
+function isCI() {
+  return !!(process.env.CI || process.env.GITHUB_ACTIONS || process.env.GITLAB_CI || process.env.CIRCLECI || process.env.BUILDKITE || process.env.JENKINS_URL);
+}
+function getOrCreateMid() {
+  if (cachedMid) return { mid: cachedMid, isNew: false };
+  const disabled = isTelemetryDisabled();
+  if (existsSync5(getMidFile())) {
+    try {
+      const raw = readFileSync10(getMidFile(), "utf-8").trim();
+      if (/^[0-9a-f]{64}$/.test(raw)) {
+        cachedMid = raw;
+        return { mid: raw, isNew: false };
+      }
+    } catch {
+    }
+  }
+  const newMid = randomBytes(32).toString("hex");
+  if (!disabled) {
+    try {
+      mkdirSync2(getStateDir(), { recursive: true });
+      writeFileSync3(getMidFile(), newMid, "utf-8");
+      try {
+        chmodSync(getMidFile(), 384);
+      } catch {
+      }
+    } catch {
+    }
+  }
+  cachedMid = newMid;
+  return { mid: newMid, isNew: true };
+}
+function readLastVersion() {
+  try {
+    if (!existsSync5(getLastVersionFile())) return null;
+    return readFileSync10(getLastVersionFile(), "utf-8").trim() || null;
+  } catch {
+    return null;
+  }
+}
+function writeLastVersion(version2) {
+  try {
+    mkdirSync2(getStateDir(), { recursive: true });
+    writeFileSync3(getLastVersionFile(), version2, "utf-8");
+  } catch {
+  }
+}
+function buildCommonFields(event, mid) {
+  return {
+    event,
+    version: AXME_CODE_VERSION,
+    source: detectSource(),
+    os: process.platform,
+    arch: process.arch,
+    ci: isCI(),
+    mid,
+    ts: (/* @__PURE__ */ new Date()).toISOString()
+  };
+}
+function getEndpoint() {
+  return process.env.AXME_TELEMETRY_ENDPOINT || DEFAULT_ENDPOINT;
+}
+async function postEvents(events) {
+  const endpoint = getEndpoint();
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
+    const resp = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ events }),
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+function readQueue() {
+  try {
+    if (!existsSync5(getQueueFile())) return [];
+    const raw = readFileSync10(getQueueFile(), "utf-8");
+    const lines = raw.split("\n").filter((l) => l.trim());
+    const out = [];
+    for (const line of lines) {
+      try {
+        out.push(JSON.parse(line));
+      } catch {
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+function writeQueue(events) {
+  try {
+    mkdirSync2(getStateDir(), { recursive: true });
+    const capped = events.slice(-QUEUE_MAX_EVENTS);
+    writeFileSync3(getQueueFile(), capped.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf-8");
+  } catch {
+  }
+}
+function appendToQueue(event) {
+  try {
+    mkdirSync2(getStateDir(), { recursive: true });
+    if (existsSync5(getQueueFile())) {
+      const existing = readQueue();
+      if (existing.length >= QUEUE_MAX_EVENTS) {
+        existing.push(event);
+        writeQueue(existing);
+        return;
+      }
+    }
+    appendFileSync2(getQueueFile(), JSON.stringify(event) + "\n", "utf-8");
+  } catch {
+  }
+}
+function clearQueue() {
+  try {
+    unlinkSync4(getQueueFile());
+  } catch {
+  }
+}
+function sendTelemetry(event, payload = {}) {
+  if (isTelemetryDisabled()) return;
+  setImmediate(() => {
+    void sendTelemetryAsync(event, payload).catch(() => {
+    });
+  });
+}
+async function sendTelemetryBlocking(event, payload = {}) {
+  if (isTelemetryDisabled()) return;
+  try {
+    await sendTelemetryAsync(event, payload);
+  } catch {
+  }
+}
+async function sendTelemetryAsync(event, payload) {
+  try {
+    const { mid } = getOrCreateMid();
+    const common2 = buildCommonFields(event, mid);
+    const fullEvent = { ...common2, ...payload };
+    const queued = readQueue();
+    const batch = [...queued, fullEvent].slice(-10);
+    const ok = await postEvents(batch);
+    if (ok) {
+      if (queued.length > 0) clearQueue();
+    } else {
+      appendToQueue(fullEvent);
+    }
+  } catch {
+  }
+}
+async function sendStartupEvents() {
+  if (isTelemetryDisabled()) return;
+  if (processStartupSent) return;
+  processStartupSent = true;
+  try {
+    const { isNew } = getOrCreateMid();
+    const lastVersion = readLastVersion();
+    const currentVersion = AXME_CODE_VERSION;
+    if (isNew) {
+      await sendTelemetryBlocking("install");
+    }
+    if (lastVersion && lastVersion !== currentVersion) {
+      await sendTelemetryBlocking("update", { previous_version: lastVersion });
+    }
+    await sendTelemetryBlocking("startup");
+    if (lastVersion !== currentVersion) {
+      writeLastVersion(currentVersion);
+    }
+  } catch {
+  }
+}
+function classifyError(err) {
+  const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+  if (msg.includes("prompt is too long") || msg.includes("max tokens") || msg.includes("context length")) return "prompt_too_long";
+  if (msg.includes("rate limit") || msg.includes("429")) return "api_rate_limit";
+  if (msg.includes("authentication") || msg.includes("api key") || msg.includes("apikey") || msg.includes("authtoken")) return "oauth_missing";
+  if (msg.includes("timeout") || msg.includes("timed out") || msg.includes("aborted")) return "timeout";
+  if (msg.includes("enoent") || msg.includes("transcript not found")) return "transcript_not_found";
+  if (msg.includes("eacces") || msg.includes("permission denied")) return "permission_denied";
+  if (msg.includes("enospc") || msg.includes("no space")) return "disk_full";
+  if (msg.includes("network") || msg.includes("econnrefused") || msg.includes("fetch failed") || msg.includes("dns")) return "network_error";
+  if (msg.includes("unexpected token") || msg.includes("invalid json") || msg.includes("parse")) return "parse_error";
+  if (msg.includes("api error") || msg.includes("500") || msg.includes("503")) return "api_error";
+  return "unknown";
+}
+function reportError(category, errorClass, fatal) {
+  sendTelemetry("error", { category, error_class: errorClass, fatal });
+}
+function _resetForTests() {
+  cachedMid = null;
+  processStartupSent = false;
+  cachedSource = null;
+}
+function _getMidFilePath() {
+  return getMidFile();
+}
+function _getQueueFilePath() {
+  return getQueueFile();
+}
+function _getLastVersionFilePath() {
+  return getLastVersionFile();
+}
+var DEFAULT_ENDPOINT, QUEUE_MAX_EVENTS, SEND_TIMEOUT_MS, cachedMid, processStartupSent, cachedSource;
+var init_telemetry = __esm({
+  "src/telemetry.ts"() {
+    "use strict";
+    init_types();
+    DEFAULT_ENDPOINT = "https://api.cloud.axme.ai/v1/telemetry/events";
+    QUEUE_MAX_EVENTS = 100;
+    SEND_TIMEOUT_MS = 3e4;
+    cachedMid = null;
+    processStartupSent = false;
+    cachedSource = null;
   }
 });
 
 // src/server.ts
-import { join as join18 } from "node:path";
-import { existsSync as existsSync6 } from "node:fs";
+import { join as join19 } from "node:path";
+import { existsSync as existsSync7 } from "node:fs";
 
 // node_modules/zod/v3/helpers/util.js
 var util;
@@ -36030,6 +36308,7 @@ function statusTool(projectPath) {
     `Decisions: ${decisions.length} recorded`,
     `  Required: ${decisions.filter((d) => d.enforce === "required").length}`,
     `  Advisory: ${decisions.filter((d) => d.enforce === "advisory").length}`,
+    `  Other:    ${decisions.filter((d) => d.enforce !== "required" && d.enforce !== "advisory").length}`,
     `Memories: ${memories.length} total`,
     `  Feedback: ${memories.filter((m) => m.type === "feedback").length}`,
     `  Patterns: ${memories.filter((m) => m.type === "pattern").length}`,
@@ -36091,22 +36370,22 @@ function spawnDetachedAuditWorker(workspacePath, sessionId) {
 
 // src/auto-update.ts
 init_types();
-import { homedir as homedir2 } from "node:os";
-import { join as join17, resolve as resolve6, basename as basename2 } from "node:path";
+import { homedir as homedir3 } from "node:os";
+import { join as join18, resolve as resolve6, basename as basename2 } from "node:path";
 import {
-  readFileSync as readFileSync10,
-  writeFileSync as writeFileSync3,
-  mkdirSync as mkdirSync2,
+  readFileSync as readFileSync11,
+  writeFileSync as writeFileSync4,
+  mkdirSync as mkdirSync3,
   renameSync as renameSync2,
-  chmodSync,
-  unlinkSync as unlinkSync4
+  chmodSync as chmodSync2,
+  unlinkSync as unlinkSync5
 } from "node:fs";
 var REPO = "AxmeAI/axme-code";
 var CHECK_INTERVAL_MS = 24 * 60 * 60 * 1e3;
 var API_TIMEOUT_MS = 5e3;
 var DOWNLOAD_TIMEOUT_MS = 6e4;
-var CONFIG_DIR = join17(homedir2(), ".config", "axme-code");
-var CACHE_FILE = join17(CONFIG_DIR, "update_check.json");
+var CONFIG_DIR = join18(homedir3(), ".config", "axme-code");
+var CACHE_FILE = join18(CONFIG_DIR, "update_check.json");
 var updateNotification = null;
 function getUpdateNotification() {
   return updateNotification;
@@ -36137,14 +36416,14 @@ function getBinaryPath() {
 }
 function readCache() {
   try {
-    return JSON.parse(readFileSync10(CACHE_FILE, "utf-8"));
+    return JSON.parse(readFileSync11(CACHE_FILE, "utf-8"));
   } catch {
     return null;
   }
 }
 function writeCache(cache) {
-  mkdirSync2(CONFIG_DIR, { recursive: true });
-  writeFileSync3(CACHE_FILE, JSON.stringify(cache, null, 2));
+  mkdirSync3(CONFIG_DIR, { recursive: true });
+  writeFileSync4(CACHE_FILE, JSON.stringify(cache, null, 2));
 }
 async function fetchLatestRelease() {
   try {
@@ -36180,13 +36459,13 @@ async function downloadBinary(tag, destPath) {
     clearTimeout(timeout);
     if (!resp.ok || !resp.body) return false;
     const buffer = Buffer.from(await resp.arrayBuffer());
-    writeFileSync3(tmpPath, buffer);
-    chmodSync(tmpPath, 493);
+    writeFileSync4(tmpPath, buffer);
+    chmodSync2(tmpPath, 493);
     renameSync2(tmpPath, destPath);
     return true;
   } catch {
     try {
-      unlinkSync4(tmpPath);
+      unlinkSync5(tmpPath);
     } catch {
     }
     return false;
@@ -36246,13 +36525,19 @@ async function backgroundAutoUpdate() {
         updated: false
       });
     }
-  } catch {
+  } catch (err) {
+    try {
+      const { reportError: reportError2, classifyError: classifyError2 } = await Promise.resolve().then(() => (init_telemetry(), telemetry_exports));
+      reportError2("auto_update", classifyError2(err), false);
+    } catch {
+    }
   }
 }
 
 // src/server.ts
+init_telemetry();
 var serverCwd = process.cwd();
-var serverHasGit = existsSync6(join18(serverCwd, ".git"));
+var serverHasGit = existsSync7(join19(serverCwd, ".git"));
 var serverWorkspace = detectWorkspace(serverCwd);
 var isWorkspace = serverHasGit ? false : serverWorkspace.type !== "single";
 var defaultProjectPath = serverCwd;
@@ -36263,6 +36548,7 @@ clearLegacyActiveSession(defaultProjectPath);
 clearLegacyPendingAuditsDir(defaultProjectPath);
 backgroundAutoUpdate().catch(() => {
 });
+void sendStartupEvents();
 function getOwnedSessionIdForLogging() {
   const all = listClaudeSessionMappings(defaultProjectPath);
   const owned = all.filter((m) => m.ownerPpid === OWN_PPID);
@@ -36369,6 +36655,25 @@ var server = new McpServer(
   { name: "axme", version: "0.1.0" },
   { instructions: buildInstructions() }
 );
+var _origRegisterTool = server.tool.bind(server);
+server.tool = function(...args) {
+  const handler = args[args.length - 1];
+  if (typeof handler === "function") {
+    args[args.length - 1] = async (...handlerArgs) => {
+      try {
+        return await handler(...handlerArgs);
+      } catch (err) {
+        try {
+          const { reportError: reportError2, classifyError: classifyError2 } = await Promise.resolve().then(() => (init_telemetry(), telemetry_exports));
+          reportError2("mcp_tool", classifyError2(err), true);
+        } catch {
+        }
+        throw err;
+      }
+    };
+  }
+  return _origRegisterTool.apply(server, args);
+};
 function pp(project_path) {
   return project_path || defaultProjectPath;
 }
@@ -36378,7 +36683,7 @@ function ppWithScope(project_path, scope) {
     const repoScope = scope.find((s) => s !== "all");
     if (repoScope) {
       const match = serverWorkspace.projects.find((p) => p.name === repoScope);
-      if (match) return join18(defaultProjectPath, match.path);
+      if (match) return join19(defaultProjectPath, match.path);
     }
   }
   return defaultProjectPath;
@@ -36531,7 +36836,8 @@ server.tool(
     value: external_exports3.string().describe("Rule value (branch name, command prefix, or file path pattern)")
   },
   async ({ project_path, rule_type, value }) => {
-    const result = updateSafetyTool(pp(project_path), rule_type, value);
+    const sid = getOwnedSessionIdForLogging();
+    const result = updateSafetyTool(pp(project_path), rule_type, value, sid ?? void 0);
     return { content: [{ type: "text", text: `Safety rule added: ${result.ruleType} = ${result.value}` }] };
   }
 );
@@ -36905,7 +37211,7 @@ server.tool(
       for (const s of args.safety_rules) {
         try {
           if (s.action === "add") {
-            updateSafetyTool2(targetPath, s.rule_type, s.value);
+            updateSafetyTool2(targetPath, s.rule_type, s.value, sid);
             report.push(`Safety added: ${s.rule_type} = ${s.value}`);
           } else if (s.action === "remove") {
             const { removeSafetyRule: removeSafetyRule2 } = await Promise.resolve().then(() => (init_safety(), safety_exports));
@@ -36931,8 +37237,8 @@ server.tool(
       date: (/* @__PURE__ */ new Date()).toISOString().slice(0, 10),
       source: "agent"
     });
-    const { appendFileSync: appendFileSync2 } = await import("node:fs");
-    const { join: join19 } = await import("node:path");
+    const { appendFileSync: appendFileSync3 } = await import("node:fs");
+    const { join: join20 } = await import("node:path");
     const { AXME_CODE_DIR: AXME_CODE_DIR2 } = await Promise.resolve().then(() => (init_types(), types_exports));
     const isoDate = (/* @__PURE__ */ new Date()).toISOString().slice(0, 16).replace("T", " ");
     const shortId = sid.slice(0, 8);
@@ -36942,7 +37248,7 @@ ${args.worklog_entry}
 
 `;
     try {
-      appendFileSync2(join19(targetPath, AXME_CODE_DIR2, "worklog.md"), worklogEntry);
+      appendFileSync3(join20(targetPath, AXME_CODE_DIR2, "worklog.md"), worklogEntry);
     } catch {
     }
     const { loadSession: loadSession2, writeSession: writeSession2 } = await Promise.resolve().then(() => (init_sessions(), sessions_exports));
@@ -36952,6 +37258,14 @@ ${args.worklog_entry}
       session.closedAt = (/* @__PURE__ */ new Date()).toISOString();
       writeSession2(targetPath, session);
     }
+    let auditorSpawned = false;
+    try {
+      spawnDetachedAuditWorker(targetPath, sid);
+      auditorSpawned = true;
+    } catch (err) {
+      process.stderr.write(`AXME finalize_close: failed to spawn auditor for ${sid}: ${err}
+`);
+    }
     const summaryLines = [
       `Session ${shortId} closed.`,
       "",
@@ -36960,12 +37274,20 @@ ${args.worklog_entry}
       `- Handoff: written to .axme-code/plans/handoff.md`,
       `- Worklog: entry appended to .axme-code/worklog.md`,
       `- agentClosed: true`,
+      `- Auditor: ${auditorSpawned ? "spawned (verify-only mode, runs in background)" : "spawn failed - will run on next session start"}`,
       "",
-      "Output to the user: first the storage summary above, then the startup_text below.",
+      "Output to the user: first the storage summary above, then the startup_text below, then the feedback request.",
       "",
       "---",
       args.startup_text,
-      "---"
+      "---",
+      "",
+      "**Show this to the user at the very end:**",
+      "> AXME Code is in alpha \u2014 your feedback shapes the product. If it saved you time today, consider:",
+      "> - Star on GitHub: https://github.com/AxmeAI/axme-code",
+      "> - Report issues or ideas: https://github.com/AxmeAI/axme-code/issues",
+      "> - Share feedback: hello@axme.ai",
+      "> - Support: support@axme.ai"
     ];
     return { content: [{ type: "text", text: summaryLines.join("\n") }] };
   }
