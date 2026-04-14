@@ -2767,7 +2767,7 @@ var AXME_CODE_VERSION, AXME_CODE_DIR, DEFAULT_MODEL, DEFAULT_AUDITOR_MODEL, DEFA
 var init_types = __esm({
   "src/types.ts"() {
     "use strict";
-    AXME_CODE_VERSION = true ? "0.2.7" : "0.0.0-dev";
+    AXME_CODE_VERSION = true ? "0.2.8" : "0.0.0-dev";
     AXME_CODE_DIR = ".axme-code";
     DEFAULT_MODEL = "claude-sonnet-4-6";
     DEFAULT_AUDITOR_MODEL = "claude-sonnet-4-6";
@@ -4012,6 +4012,9 @@ function checkBash(rules, command2) {
   }
   return { allowed: true };
 }
+function cleanGateValue(raw) {
+  return raw.replace(TRAILING_PUNCT_RE, "");
+}
 function parseAxmeGate(command2) {
   const lastIdx = command2.lastIndexOf("#!axme");
   if (lastIdx === -1) return null;
@@ -4019,10 +4022,13 @@ function parseAxmeGate(command2) {
   const match = suffix.match(/^#!axme\s+(.*)/);
   if (!match) return null;
   const pairs2 = match[1].trim();
-  const prMatch = pairs2.match(/\bpr=(\S+)/);
-  const repoMatch = pairs2.match(/\brepo=(\S+)/);
+  const prMatch = pairs2.match(PR_RE);
+  const repoMatch = pairs2.match(REPO_RE);
   if (!prMatch || !repoMatch) return null;
-  return { pr: prMatch[1], repo: repoMatch[1] };
+  const pr = cleanGateValue(prMatch[1]);
+  const repo = cleanGateValue(repoMatch[1]);
+  if (!pr || !repo) return null;
+  return { pr, repo };
 }
 function isPrMerged(prNumber, repo) {
   const result = execSync(
@@ -4185,7 +4191,7 @@ function loadMergedSafetyRules(projectPath, workspacePath) {
   const workspaceRules = loadSafetyRules(workspacePath);
   return unionMergeSafety(workspaceRules, projectRules);
 }
-var SAFETY_DIR, RULES_FILE, DEFAULT_GIT_RULES, DEFAULT_BASH_RULES, DEFAULT_FS_RULES, AXME_GATE_INSTRUCTION;
+var SAFETY_DIR, RULES_FILE, DEFAULT_GIT_RULES, DEFAULT_BASH_RULES, DEFAULT_FS_RULES, GATE_VALUE, PR_RE, REPO_RE, TRAILING_PUNCT_RE, AXME_GATE_INSTRUCTION;
 var init_safety = __esm({
   "src/storage/safety.ts"() {
     "use strict";
@@ -4277,7 +4283,11 @@ var init_safety = __esm({
         "*.key"
       ]
     };
-    AXME_GATE_INSTRUCTION = "BLOCKED: git commit/push requires #!axme safety metadata. Retry with: `<your command> #!axme pr=<PR_NUMBER|none> repo=<OWNER/REPO>` (pr=none if no PR created yet).";
+    GATE_VALUE = /[^\s"'`]+/.source;
+    PR_RE = new RegExp(`\\bpr=(${GATE_VALUE})`);
+    REPO_RE = new RegExp(`\\brepo=(${GATE_VALUE})`);
+    TRAILING_PUNCT_RE = /[)\],;.]+$/;
+    AXME_GATE_INSTRUCTION = 'BLOCKED: git commit/push requires #!axme safety metadata. Retry with: `<your command> #!axme pr=<PR_NUMBER|none> repo=<OWNER/REPO>` (pr=none if no PR created yet). Place the marker AFTER the closing `"` of any `-m "..."` argument, not inside it \u2014 otherwise the closing quote gets parsed as part of the repo name.';
   }
 });
 
@@ -6667,16 +6677,32 @@ async function sendStartupEvents() {
 }
 function classifyError(err) {
   const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+  const name = err instanceof Error ? err.name.toLowerCase() : "";
   if (msg.includes("prompt is too long") || msg.includes("max tokens") || msg.includes("context length")) return "prompt_too_long";
   if (msg.includes("rate limit") || msg.includes("429")) return "api_rate_limit";
   if (msg.includes("authentication") || msg.includes("api key") || msg.includes("apikey") || msg.includes("authtoken")) return "oauth_missing";
   if (msg.includes("timeout") || msg.includes("timed out") || msg.includes("aborted")) return "timeout";
-  if (msg.includes("enoent") || msg.includes("transcript not found")) return "transcript_not_found";
+  if (msg.includes("transcript not found")) return "transcript_not_found";
+  if (msg.includes("err_invalid_arg_type") || msg.includes("fileurltopath") || msg.includes("argument must be of type") && msg.includes("received undefined")) {
+    return "node_invalid_arg";
+  }
+  if (msg.includes("err_module_not_found") || msg.includes("cannot find module") || msg.includes("cannot find package")) {
+    return "module_not_found";
+  }
+  if (msg.includes("spawn enoent") || msg.includes("spawn eacces") || msg.includes("child_process") && msg.includes("enoent")) {
+    return "spawn_error";
+  }
+  if (msg.includes("enomem") || msg.includes("heap out of memory") || msg.includes("allocation failed") || msg.includes("out of memory")) {
+    return "out_of_memory";
+  }
+  if (msg.includes("enoent")) return "transcript_not_found";
   if (msg.includes("eacces") || msg.includes("permission denied")) return "permission_denied";
   if (msg.includes("enospc") || msg.includes("no space")) return "disk_full";
-  if (msg.includes("network") || msg.includes("econnrefused") || msg.includes("fetch failed") || msg.includes("dns")) return "network_error";
+  if (msg.includes("network") || msg.includes("econnrefused") || msg.includes("econnreset") || msg.includes("fetch failed") || msg.includes("dns")) return "network_error";
   if (msg.includes("unexpected token") || msg.includes("invalid json") || msg.includes("parse")) return "parse_error";
   if (msg.includes("api error") || msg.includes("500") || msg.includes("503")) return "api_error";
+  if (name === "referenceerror") return "reference_error";
+  if (name === "typeerror") return "type_error";
   return "unknown";
 }
 function reportError(category, errorClass, fatal) {
@@ -39693,7 +39719,7 @@ ${args2.worklog_entry}
           "> AXME Code is in alpha \u2014 your feedback shapes the product. If it saved you time today, consider:",
           "> - Star on GitHub: https://github.com/AxmeAI/axme-code",
           "> - Report issues or ideas: https://github.com/AxmeAI/axme-code/issues",
-          "> - Share feedback: hello@axme.ai",
+          "> - Share feedback: contact@axme.ai",
           "> - Support: support@axme.ai"
         ];
         return { content: [{ type: "text", text: summaryLines.join("\n") }] };
@@ -40474,12 +40500,14 @@ ${opts.sessionEvents}
 }
 async function runSingleAuditCall(opts) {
   const sdk = await import("@anthropic-ai/claude-agent-sdk");
+  const claudePath = findClaudePath();
   const queryOpts = {
     cwd: opts.sessionOrigin,
     model: opts.model,
     systemPrompt: AUDIT_SYSTEM_PROMPT,
     settingSources: [],
     mcpServers: {},
+    ...claudePath ? { pathToClaudeCodeExecutable: claudePath } : {},
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     allowedTools: ["Read", "Grep", "Glob"],
@@ -40678,12 +40706,14 @@ JSON SCHEMA:
 
 ANALYSIS TO FORMAT:
 ${freeTextAnalysis}`;
+  const claudePath = findClaudePath();
   const queryOpts = {
     cwd: sessionOrigin,
     model,
     systemPrompt: "You are a JSON formatting assistant. Output only a ```json code fence with the structured data. No other text.",
     settingSources: [],
     mcpServers: {},
+    ...claudePath ? { pathToClaudeCodeExecutable: claudePath } : {},
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     allowedTools: [],
@@ -40922,6 +40952,7 @@ var init_session_auditor = __esm({
     "use strict";
     init_types();
     init_cost_extractor();
+    init_agent_options();
     init_memory();
     init_decisions();
     init_memory();
@@ -41836,6 +41867,7 @@ ${audit.sessionSummary}
     try {
       const { sendTelemetryBlocking: sendTelemetryBlocking2 } = await Promise.resolve().then(() => (init_telemetry(), telemetry_exports));
       const outcome = result.auditRan ? "success" : "failed";
+      const isFailed = outcome === "failed";
       await sendTelemetryBlocking2("audit_complete", {
         outcome,
         duration_ms: auditStartMs > 0 ? Date.now() - auditStartMs : 0,
@@ -41846,7 +41878,8 @@ ${audit.sessionSummary}
         decisions_saved: result.decisions,
         safety_saved: result.safetyRules,
         dropped_count: auditDroppedCount,
-        error_class: auditErrorClass
+        error_class: auditErrorClass,
+        ...isFailed ? { category: "audit", fatal: false } : {}
       });
     } catch {
     }
