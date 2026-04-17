@@ -2767,7 +2767,7 @@ var AXME_CODE_VERSION, AXME_CODE_DIR, DEFAULT_MODEL, DEFAULT_AUDITOR_MODEL, DEFA
 var init_types = __esm({
   "src/types.ts"() {
     "use strict";
-    AXME_CODE_VERSION = true ? "0.2.8" : "0.0.0-dev";
+    AXME_CODE_VERSION = true ? "0.2.9" : "0.0.0-dev";
     AXME_CODE_DIR = ".axme-code";
     DEFAULT_MODEL = "claude-sonnet-4-6";
     DEFAULT_AUDITOR_MODEL = "claude-sonnet-4-6";
@@ -5380,16 +5380,189 @@ var init_cost_extractor = __esm({
   }
 });
 
+// src/utils/auth-detect.ts
+import { execFileSync } from "node:child_process";
+import { homedir as homedir2, userInfo } from "node:os";
+import { join as join12 } from "node:path";
+function maskApiKey(key) {
+  const trimmed = key.trim();
+  const last4 = trimmed.slice(-4);
+  const prefix = trimmed.startsWith("sk-ant-") ? "sk-ant-" : "";
+  return `${prefix}...${last4}`;
+}
+function detectApiKey() {
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key || !key.trim()) return { present: false };
+  return { present: true, masked: maskApiKey(key) };
+}
+function detectSubscriptionFromKeychain() {
+  if (process.platform !== "darwin") return null;
+  try {
+    const user = userInfo().username;
+    execFileSync("security", ["find-generic-password", "-s", "Claude Code", "-a", user], {
+      stdio: "ignore"
+    });
+    return {
+      present: true,
+      source: "keychain",
+      details: 'macOS Keychain entry "Claude Code"',
+      binaryFound: true
+    };
+  } catch {
+    return null;
+  }
+}
+function detectSubscriptionFromFilesystem() {
+  const home = homedir2();
+  const candidates = [
+    join12(home, ".claude", ".credentials.json"),
+    join12(home, ".config", "claude", ".credentials.json")
+  ];
+  for (const path of candidates) {
+    if (pathExists(path)) {
+      return {
+        present: true,
+        source: "filesystem",
+        details: path,
+        binaryFound: true
+      };
+    }
+  }
+  return null;
+}
+function detectSubscription() {
+  const binaryFound = Boolean(findClaudePath());
+  if (!binaryFound) return { present: false, binaryFound: false };
+  const fromKeychain = detectSubscriptionFromKeychain();
+  if (fromKeychain) return fromKeychain;
+  const fromFs = detectSubscriptionFromFilesystem();
+  if (fromFs) return fromFs;
+  return { present: false, binaryFound: true };
+}
+function detectAuthOptions() {
+  return {
+    apiKey: detectApiKey(),
+    subscription: detectSubscription()
+  };
+}
+var init_auth_detect = __esm({
+  "src/utils/auth-detect.ts"() {
+    "use strict";
+    init_engine();
+    init_agent_options();
+  }
+});
+
+// src/utils/auth-config.ts
+import { homedir as homedir3 } from "node:os";
+import { join as join13 } from "node:path";
+function configDir() {
+  return join13(homedir3(), ".config", "axme-code");
+}
+function authConfigPath() {
+  return join13(configDir(), "auth.yaml");
+}
+function loadAuthConfig() {
+  const file2 = authConfigPath();
+  if (!pathExists(file2)) return null;
+  const raw = readSafe(file2);
+  if (!raw) return null;
+  try {
+    const parsed = jsYaml.load(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    if (parsed.mode !== "subscription" && parsed.mode !== "api_key") return null;
+    const chosenAt = typeof parsed.chosenAt === "string" ? parsed.chosenAt : (/* @__PURE__ */ new Date()).toISOString();
+    return { mode: parsed.mode, chosenAt };
+  } catch {
+    return null;
+  }
+}
+function saveAuthConfig(mode) {
+  ensureDir(configDir());
+  const config2 = { mode, chosenAt: (/* @__PURE__ */ new Date()).toISOString() };
+  atomicWrite(authConfigPath(), jsYaml.dump(config2));
+  return config2;
+}
+function heuristicMode(options) {
+  if (options.subscription.present && !options.apiKey.present) return "subscription";
+  return "api_key";
+}
+function resolveAuthMode() {
+  const saved = loadAuthConfig();
+  if (saved) return saved.mode;
+  return heuristicMode(detectAuthOptions());
+}
+var init_auth_config = __esm({
+  "src/utils/auth-config.ts"() {
+    "use strict";
+    init_js_yaml();
+    init_engine();
+    init_auth_detect();
+  }
+});
+
 // src/utils/agent-options.ts
 import { execSync as execSync2 } from "node:child_process";
+import { existsSync as existsSync5, readdirSync as readdirSync8 } from "node:fs";
+import { join as join14 } from "node:path";
+import { homedir as homedir4 } from "node:os";
 function findClaudePath() {
   if (_claudePath !== void 0) return _claudePath || void 0;
-  try {
-    _claudePath = execSync2("which claude", { encoding: "utf-8" }).trim();
-  } catch {
-    _claudePath = "";
+  if (process.env.AXME_CLAUDE_EXECUTABLE && existsSync5(process.env.AXME_CLAUDE_EXECUTABLE)) {
+    _claudePath = process.env.AXME_CLAUDE_EXECUTABLE;
+    return _claudePath;
   }
-  return _claudePath || void 0;
+  if (process.env.CLAUDE_CODE_ENTRYPOINT && existsSync5(process.env.CLAUDE_CODE_ENTRYPOINT)) {
+    _claudePath = process.env.CLAUDE_CODE_ENTRYPOINT;
+    return _claudePath;
+  }
+  try {
+    const p = execSync2("which claude", { encoding: "utf-8", timeout: 5e3 }).trim();
+    if (p && existsSync5(p)) {
+      _claudePath = p;
+      return _claudePath;
+    }
+  } catch {
+  }
+  const home = homedir4();
+  const standardPaths = [
+    join14(home, ".local", "bin", "claude"),
+    "/usr/local/bin/claude",
+    "/opt/homebrew/bin/claude",
+    "/usr/bin/claude"
+  ];
+  for (const candidate of standardPaths) {
+    if (existsSync5(candidate)) {
+      _claudePath = candidate;
+      return _claudePath;
+    }
+  }
+  try {
+    const nvmDir = join14(home, ".nvm", "versions", "node");
+    if (existsSync5(nvmDir)) {
+      for (const ver of readdirSync8(nvmDir)) {
+        const candidate = join14(nvmDir, ver, "bin", "claude");
+        if (existsSync5(candidate)) {
+          _claudePath = candidate;
+          return _claudePath;
+        }
+      }
+    }
+  } catch {
+  }
+  _claudePath = "";
+  return void 0;
+}
+function buildAgentEnv() {
+  const env = {
+    ...process.env,
+    AXME_TELEMETRY_DISABLED: "1",
+    AXME_SKIP_HOOKS: "1"
+  };
+  if (resolveAuthMode() === "subscription") {
+    delete env.ANTHROPIC_API_KEY;
+  }
+  return env;
 }
 function buildAgentQueryOptions(base, role) {
   const tools = ROLE_TOOLS[role];
@@ -5406,18 +5579,14 @@ function buildAgentQueryOptions(base, role) {
     allowedTools: tools.allowed,
     disallowedTools: tools.disallowed,
     includePartialMessages: true,
-    // Disable telemetry in spawned subprocesses. Sub-claude sessions started
-    // by scanners/auditors may pick up the parent's .mcp.json and re-launch
-    // axme-code as an MCP server. Each re-launch would otherwise fire its
-    // own startup event, inflating DAU and skewing scanner cost metrics.
-    // The parent process owns the lifecycle event for this user action.
-    env: { ...process.env, AXME_TELEMETRY_DISABLED: "1", AXME_SKIP_HOOKS: "1" }
+    env: buildAgentEnv()
   };
 }
 var _claudePath, ROLE_TOOLS;
 var init_agent_options = __esm({
   "src/utils/agent-options.ts"() {
     "use strict";
+    init_auth_config();
     ROLE_TOOLS = {
       auditor: {
         allowed: ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "Agent"],
@@ -6094,8 +6263,8 @@ var workspace_detector_exports = {};
 __export(workspace_detector_exports, {
   detectWorkspace: () => detectWorkspace
 });
-import { readFileSync as readFileSync11, readdirSync as readdirSync8, existsSync as existsSync5, statSync as statSync4 } from "node:fs";
-import { join as join12, resolve as resolve5, dirname as dirname3, basename } from "node:path";
+import { readFileSync as readFileSync11, readdirSync as readdirSync9, existsSync as existsSync6, statSync as statSync4 } from "node:fs";
+import { join as join15, resolve as resolve5, dirname as dirname3, basename } from "node:path";
 function detectWorkspace(cwd) {
   const root = resolve5(cwd);
   const result = detectVSCodeWorkspace(root) ?? detectDotnetSolution(root) ?? detectJetBrains(root) ?? detectSublime(root) ?? detectRush(root) ?? detectPnpmWorkspace(root) ?? detectNpmWorkspace(root) ?? detectLerna(root) ?? detectNx(root) ?? detectGradle(root) ?? detectMaven(root) ?? detectGitSubmodules(root) ?? detectMultiGit(root);
@@ -6111,8 +6280,8 @@ function enrichWithGitRepos(root, ws) {
     if (entry.startsWith(".") || ["node_modules", "dist", "build", ".git"].includes(entry)) continue;
     const normalized = entry.replace(/^\.\/?/, "");
     if (knownPaths.has(normalized)) continue;
-    const entryPath = join12(root, entry);
-    if (isDir(entryPath) && existsSync5(join12(entryPath, ".git"))) {
+    const entryPath = join15(root, entry);
+    if (isDir(entryPath) && existsSync6(join15(entryPath, ".git"))) {
       newProjects.push({ path: normalized, name: normalized });
       knownPaths.add(normalized);
     }
@@ -6122,7 +6291,7 @@ function enrichWithGitRepos(root, ws) {
 function detectVSCodeWorkspace(root) {
   const files = safeReaddir(root).filter((f) => f.endsWith(".code-workspace"));
   if (files.length === 0) return null;
-  const filePath = join12(root, files[0]);
+  const filePath = join15(root, files[0]);
   try {
     const raw = readFileSync11(filePath, "utf-8");
     const cleaned = raw.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
@@ -6138,7 +6307,7 @@ function detectVSCodeWorkspace(root) {
 function detectDotnetSolution(root) {
   const files = safeReaddir(root).filter((f) => f.endsWith(".sln"));
   if (files.length === 0) return null;
-  const filePath = join12(root, files[0]);
+  const filePath = join15(root, files[0]);
   try {
     const content = readFileSync11(filePath, "utf-8");
     const projectRegex = /Project\("[^"]*"\)\s*=\s*"([^"]*)",\s*"([^"]*)"/g;
@@ -6161,8 +6330,8 @@ function detectDotnetSolution(root) {
   }
 }
 function detectJetBrains(root) {
-  const modulesPath = join12(root, ".idea", "modules.xml");
-  if (!existsSync5(modulesPath)) return null;
+  const modulesPath = join15(root, ".idea", "modules.xml");
+  if (!existsSync6(modulesPath)) return null;
   try {
     const content = readFileSync11(modulesPath, "utf-8");
     const moduleRegex = /filepath="\$PROJECT_DIR\$\/([^"]+\.iml)"/g;
@@ -6183,7 +6352,7 @@ function detectJetBrains(root) {
 function detectSublime(root) {
   const files = safeReaddir(root).filter((f) => f.endsWith(".sublime-project"));
   if (files.length === 0) return null;
-  const filePath = join12(root, files[0]);
+  const filePath = join15(root, files[0]);
   try {
     const data = JSON.parse(readFileSync11(filePath, "utf-8"));
     if (!data.folders || !Array.isArray(data.folders)) return null;
@@ -6195,8 +6364,8 @@ function detectSublime(root) {
   }
 }
 function detectRush(root) {
-  const filePath = join12(root, "rush.json");
-  if (!existsSync5(filePath)) return null;
+  const filePath = join15(root, "rush.json");
+  if (!existsSync6(filePath)) return null;
   try {
     const data = JSON.parse(readFileSync11(filePath, "utf-8"));
     if (!data.projects || !Array.isArray(data.projects)) return null;
@@ -6211,8 +6380,8 @@ function detectRush(root) {
   }
 }
 function detectPnpmWorkspace(root) {
-  const filePath = join12(root, "pnpm-workspace.yaml");
-  if (!existsSync5(filePath)) return null;
+  const filePath = join15(root, "pnpm-workspace.yaml");
+  if (!existsSync6(filePath)) return null;
   try {
     const content = readFileSync11(filePath, "utf-8");
     const packagesMatch = content.match(/packages:\s*\n((?:\s+-\s+.+\n?)*)/);
@@ -6226,8 +6395,8 @@ function detectPnpmWorkspace(root) {
   }
 }
 function detectNpmWorkspace(root) {
-  const filePath = join12(root, "package.json");
-  if (!existsSync5(filePath)) return null;
+  const filePath = join15(root, "package.json");
+  if (!existsSync6(filePath)) return null;
   try {
     const data = JSON.parse(readFileSync11(filePath, "utf-8"));
     if (!data.workspaces) return null;
@@ -6241,8 +6410,8 @@ function detectNpmWorkspace(root) {
   }
 }
 function detectLerna(root) {
-  const filePath = join12(root, "lerna.json");
-  if (!existsSync5(filePath)) return null;
+  const filePath = join15(root, "lerna.json");
+  if (!existsSync6(filePath)) return null;
   try {
     const data = JSON.parse(readFileSync11(filePath, "utf-8"));
     const globs = data.packages ?? ["packages/*"];
@@ -6254,31 +6423,31 @@ function detectLerna(root) {
   }
 }
 function detectNx(root) {
-  if (!existsSync5(join12(root, "nx.json"))) return null;
+  if (!existsSync6(join15(root, "nx.json"))) return null;
   const projects = [];
   for (const dir of ["apps", "packages", "libs", "projects"]) {
-    const fullDir = join12(root, dir);
-    if (!existsSync5(fullDir)) continue;
+    const fullDir = join15(root, dir);
+    if (!existsSync6(fullDir)) continue;
     for (const entry of safeReaddir(fullDir)) {
-      if (existsSync5(join12(fullDir, entry, "project.json"))) {
-        projects.push({ path: join12(dir, entry), name: entry });
+      if (existsSync6(join15(fullDir, entry, "project.json"))) {
+        projects.push({ path: join15(dir, entry), name: entry });
       }
     }
   }
   for (const entry of safeReaddir(root)) {
     if (entry.startsWith(".") || ["node_modules", "dist", "build"].includes(entry)) continue;
-    const entryPath = join12(root, entry);
-    if (isDir(entryPath) && existsSync5(join12(entryPath, "project.json")) && !projects.some((p) => p.path === entry)) {
+    const entryPath = join15(root, entry);
+    if (isDir(entryPath) && existsSync6(join15(entryPath, "project.json")) && !projects.some((p) => p.path === entry)) {
       projects.push({ path: entry, name: entry });
     }
   }
   if (projects.length < 2) return null;
-  return { type: "nx", root, projects, manifestPath: join12(root, "nx.json") };
+  return { type: "nx", root, projects, manifestPath: join15(root, "nx.json") };
 }
 function detectGradle(root) {
-  const groovyPath = join12(root, "settings.gradle");
-  const kotlinPath = join12(root, "settings.gradle.kts");
-  const filePath = existsSync5(groovyPath) ? groovyPath : existsSync5(kotlinPath) ? kotlinPath : null;
+  const groovyPath = join15(root, "settings.gradle");
+  const kotlinPath = join15(root, "settings.gradle.kts");
+  const filePath = existsSync6(groovyPath) ? groovyPath : existsSync6(kotlinPath) ? kotlinPath : null;
   if (!filePath) return null;
   try {
     const content = readFileSync11(filePath, "utf-8");
@@ -6301,8 +6470,8 @@ function detectGradle(root) {
   }
 }
 function detectMaven(root) {
-  const filePath = join12(root, "pom.xml");
-  if (!existsSync5(filePath)) return null;
+  const filePath = join15(root, "pom.xml");
+  if (!existsSync6(filePath)) return null;
   try {
     const content = readFileSync11(filePath, "utf-8");
     const moduleRegex = /<module>([^<]+)<\/module>/g;
@@ -6321,8 +6490,8 @@ function detectMaven(root) {
   }
 }
 function detectGitSubmodules(root) {
-  const filePath = join12(root, ".gitmodules");
-  if (!existsSync5(filePath)) return null;
+  const filePath = join15(root, ".gitmodules");
+  if (!existsSync6(filePath)) return null;
   try {
     const content = readFileSync11(filePath, "utf-8");
     const pathRegex = /path\s*=\s*(.+)/g;
@@ -6342,8 +6511,8 @@ function detectMultiGit(root) {
   const projects = [];
   for (const entry of safeReaddir(root)) {
     if (entry.startsWith(".") || ["node_modules", "dist", "build", ".git"].includes(entry)) continue;
-    const entryPath = join12(root, entry);
-    if (isDir(entryPath) && existsSync5(join12(entryPath, ".git"))) {
+    const entryPath = join15(root, entry);
+    if (isDir(entryPath) && existsSync6(join15(entryPath, ".git"))) {
       projects.push({ path: entry, name: entry });
     }
   }
@@ -6352,7 +6521,7 @@ function detectMultiGit(root) {
 }
 function safeReaddir(dir) {
   try {
-    return readdirSync8(dir);
+    return readdirSync9(dir);
   } catch {
     return [];
   }
@@ -6369,21 +6538,21 @@ function resolveGlobs(root, globs) {
   for (const glob of globs) {
     if (glob.endsWith("/*") || glob.endsWith("/**")) {
       const dir = glob.replace(/\/\*\*?$/, "");
-      const fullDir = join12(root, dir);
-      if (!existsSync5(fullDir)) continue;
+      const fullDir = join15(root, dir);
+      if (!existsSync6(fullDir)) continue;
       for (const entry of safeReaddir(fullDir)) {
-        const entryPath = join12(fullDir, entry);
+        const entryPath = join15(fullDir, entry);
         if (!isDir(entryPath)) continue;
-        if (existsSync5(join12(entryPath, "package.json"))) {
-          const path = join12(dir, entry);
+        if (existsSync6(join15(entryPath, "package.json"))) {
+          const path = join15(dir, entry);
           if (!projects.some((p) => p.path === path)) {
             projects.push({ path, name: entry });
           }
         }
       }
     } else {
-      const fullPath = join12(root, glob);
-      if (existsSync5(fullPath) && isDir(fullPath)) {
+      const fullPath = join15(root, glob);
+      if (existsSync6(fullPath) && isDir(fullPath)) {
         if (!projects.some((p) => p.path === glob)) {
           projects.push({ path: glob, name: basename(glob) });
         }
@@ -6399,9 +6568,9 @@ var init_workspace_detector = __esm({
 });
 
 // src/tools/status.ts
-import { join as join14 } from "node:path";
+import { join as join17 } from "node:path";
 function statusTool(projectPath) {
-  const initialized = pathExists(join14(projectPath, AXME_CODE_DIR));
+  const initialized = pathExists(join17(projectPath, AXME_CODE_DIR));
   if (!initialized) return "Project not initialized. Run axme_init first.";
   const oracle = oracleExists(projectPath) ? "initialized" : "not initialized";
   const decisions = listDecisions(projectPath);
@@ -6468,10 +6637,10 @@ __export(telemetry_exports, {
   sendTelemetryBlocking: () => sendTelemetryBlocking,
   writeLastVersion: () => writeLastVersion
 });
-import { homedir as homedir2 } from "node:os";
-import { join as join15 } from "node:path";
+import { homedir as homedir5 } from "node:os";
+import { join as join18 } from "node:path";
 import {
-  existsSync as existsSync7,
+  existsSync as existsSync8,
   readFileSync as readFileSync12,
   writeFileSync as writeFileSync3,
   mkdirSync as mkdirSync2,
@@ -6481,16 +6650,16 @@ import {
 } from "node:fs";
 import { randomBytes } from "node:crypto";
 function getStateDir() {
-  return process.env.AXME_TELEMETRY_STATE_DIR || join15(homedir2(), ".local", "share", "axme-code");
+  return process.env.AXME_TELEMETRY_STATE_DIR || join18(homedir5(), ".local", "share", "axme-code");
 }
 function getMidFile() {
-  return join15(getStateDir(), "machine-id");
+  return join18(getStateDir(), "machine-id");
 }
 function getLastVersionFile() {
-  return join15(getStateDir(), "last-version");
+  return join18(getStateDir(), "last-version");
 }
 function getQueueFile() {
-  return join15(getStateDir(), "telemetry-queue.jsonl");
+  return join18(getStateDir(), "telemetry-queue.jsonl");
 }
 function isTelemetryDisabled() {
   return !!(process.env.AXME_TELEMETRY_DISABLED || process.env.DO_NOT_TRACK);
@@ -6506,7 +6675,7 @@ function isCI() {
 function getOrCreateMid() {
   if (cachedMid) return { mid: cachedMid, isNew: false };
   const disabled = isTelemetryDisabled();
-  if (existsSync7(getMidFile())) {
+  if (existsSync8(getMidFile())) {
     try {
       const raw = readFileSync12(getMidFile(), "utf-8").trim();
       if (/^[0-9a-f]{64}$/.test(raw)) {
@@ -6533,7 +6702,7 @@ function getOrCreateMid() {
 }
 function readLastVersion() {
   try {
-    if (!existsSync7(getLastVersionFile())) return null;
+    if (!existsSync8(getLastVersionFile())) return null;
     return readFileSync12(getLastVersionFile(), "utf-8").trim() || null;
   } catch {
     return null;
@@ -6580,7 +6749,7 @@ async function postEvents(events) {
 }
 function readQueue() {
   try {
-    if (!existsSync7(getQueueFile())) return [];
+    if (!existsSync8(getQueueFile())) return [];
     const raw = readFileSync12(getQueueFile(), "utf-8");
     const lines = raw.split("\n").filter((l) => l.trim());
     const out = [];
@@ -6606,7 +6775,7 @@ function writeQueue(events) {
 function appendToQueue(event) {
   try {
     mkdirSync2(getStateDir(), { recursive: true });
-    if (existsSync7(getQueueFile())) {
+    if (existsSync8(getQueueFile())) {
       const existing = readQueue();
       if (existing.length >= QUEUE_MAX_EVENTS) {
         existing.push(event);
@@ -37996,9 +38165,9 @@ __export(questions_exports, {
   markQuestionApplied: () => markQuestionApplied,
   questionsContext: () => questionsContext
 });
-import { join as join16 } from "node:path";
+import { join as join19 } from "node:path";
 function questionsPath(projectPath) {
-  return join16(projectPath, AXME_CODE_DIR, QUESTIONS_FILE);
+  return join19(projectPath, AXME_CODE_DIR, QUESTIONS_FILE);
 }
 function nextId(existing) {
   const maxNum = existing.reduce((max, q) => {
@@ -38060,7 +38229,7 @@ function askQuestion(projectPath, input) {
   };
   const block = formatQuestion(q);
   const path = questionsPath(projectPath);
-  ensureDir(join16(projectPath, AXME_CODE_DIR));
+  ensureDir(join19(projectPath, AXME_CODE_DIR));
   const prev = readSafe(path);
   atomicWrite(path, prev ? prev.trimEnd() + "\n\n" + block : block);
   return q;
@@ -38139,8 +38308,8 @@ __export(backlog_exports, {
   toBacklogSlug: () => toBacklogSlug,
   updateBacklogItem: () => updateBacklogItem
 });
-import { readdirSync as readdirSync9, readFileSync as readFileSync13 } from "node:fs";
-import { join as join17 } from "node:path";
+import { readdirSync as readdirSync10, readFileSync as readFileSync13 } from "node:fs";
+import { join as join20 } from "node:path";
 function initBacklogStore(projectPath) {
   ensureDir(backlogDir(projectPath));
 }
@@ -38181,8 +38350,8 @@ function updateBacklogItem(projectPath, idOrSlug, updates) {
 function listBacklogItems(projectPath, status) {
   const dir = backlogDir(projectPath);
   if (!pathExists(dir)) return [];
-  const files = readdirSync9(dir).filter((f) => f.startsWith("B-") && f.endsWith(".md")).sort();
-  const items = files.map((f) => parseBacklogFile(readFileSync13(join17(dir, f), "utf-8"))).filter(Boolean);
+  const files = readdirSync10(dir).filter((f) => f.startsWith("B-") && f.endsWith(".md")).sort();
+  const items = files.map((f) => parseBacklogFile(readFileSync13(join20(dir, f), "utf-8"))).filter(Boolean);
   if (status) return items.filter((i) => i.status === status);
   return items;
 }
@@ -38195,7 +38364,7 @@ function backlogExists(projectPath) {
   return pathExists(backlogDir(projectPath));
 }
 function backlogDir(projectPath) {
-  return join17(projectPath, AXME_CODE_DIR, BACKLOG_DIR);
+  return join20(projectPath, AXME_CODE_DIR, BACKLOG_DIR);
 }
 function backlogContext(projectPath) {
   const items = listBacklogItems(projectPath);
@@ -38230,7 +38399,7 @@ function showBacklog(projectPath, status) {
   }).join("\n");
 }
 function itemPath(projectPath, id, slug) {
-  return join17(backlogDir(projectPath), `${id}-${slug}.md`);
+  return join20(backlogDir(projectPath), `${id}-${slug}.md`);
 }
 function toBacklogSlug(text) {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50);
@@ -38299,14 +38468,14 @@ var init_backlog = __esm({
 });
 
 // src/tools/context.ts
-import { join as join18 } from "node:path";
-import { existsSync as existsSync8 } from "node:fs";
+import { join as join21 } from "node:path";
+import { existsSync as existsSync9 } from "node:fs";
 function buildStorageRootHeader(projectPath, workspacePath) {
   const ws = detectWorkspace(projectPath);
-  const hasGit = existsSync8(join18(projectPath, ".git"));
+  const hasGit = existsSync9(join21(projectPath, ".git"));
   const isWorkspace2 = hasGit ? false : ws.type !== "single" || workspacePath != null && workspacePath !== projectPath;
   const sessionType = isWorkspace2 ? "workspace (multi-repo)" : "single-repo";
-  const storageRoot = join18(projectPath, AXME_CODE_DIR);
+  const storageRoot = join21(projectPath, AXME_CODE_DIR);
   const lines = [
     "# AXME Storage Root",
     "",
@@ -38326,10 +38495,10 @@ function buildStorageRootHeader(projectPath, workspacePath) {
 function getFullContextSections(projectPath, workspacePath) {
   const parts = [];
   parts.push(buildStorageRootHeader(projectPath, workspacePath));
-  const storageDirExists = pathExists(join18(projectPath, AXME_CODE_DIR));
+  const storageDirExists = pathExists(join21(projectPath, AXME_CODE_DIR));
   const hasConfig = configExists(projectPath);
   if (!storageDirExists || !hasConfig) {
-    const setupLock = join18(projectPath, AXME_CODE_DIR, "setup.lock");
+    const setupLock = join21(projectPath, AXME_CODE_DIR, "setup.lock");
     if (pathExists(setupLock)) {
       return [parts[0] + "\n\nSetup is already running. Wait for it to finish, then call axme_context again."];
     }
@@ -38350,7 +38519,7 @@ function getFullContextSections(projectPath, workspacePath) {
   }
   const handoff = handoffContext(workspacePath ?? projectPath);
   if (handoff) parts.push(handoff);
-  const worklogPath2 = join18(workspacePath ?? projectPath, AXME_CODE_DIR, "worklog.md");
+  const worklogPath2 = join21(workspacePath ?? projectPath, AXME_CODE_DIR, "worklog.md");
   const worklogContent = readSafe(worklogPath2);
   if (worklogContent.length > 20) {
     const entries = worklogContent.split(/(?=^## )/m).filter((e) => e.trim());
@@ -38684,11 +38853,11 @@ var init_safety_tools = __esm({
 // src/audit-spawner.ts
 import { spawn } from "node:child_process";
 import { openSync as openSync3, closeSync as closeSync3 } from "node:fs";
-import { join as join19 } from "node:path";
+import { join as join22 } from "node:path";
 function spawnDetachedAuditWorker(workspacePath, sessionId) {
-  const logsDir = join19(workspacePath, AXME_CODE_DIR, AUDIT_WORKER_LOGS_DIR);
+  const logsDir = join22(workspacePath, AXME_CODE_DIR, AUDIT_WORKER_LOGS_DIR);
   ensureDir(logsDir);
-  const logPath = join19(logsDir, `${sessionId}.log`);
+  const logPath = join22(logsDir, `${sessionId}.log`);
   const fd = openSync3(logPath, "a");
   try {
     const cliPath = process.argv[1];
@@ -38725,8 +38894,8 @@ var init_audit_spawner = __esm({
 });
 
 // src/auto-update.ts
-import { homedir as homedir3 } from "node:os";
-import { join as join20, resolve as resolve6, basename as basename2 } from "node:path";
+import { homedir as homedir6 } from "node:os";
+import { join as join23, resolve as resolve6, basename as basename2 } from "node:path";
 import {
   readFileSync as readFileSync14,
   writeFileSync as writeFileSync4,
@@ -38890,16 +39059,16 @@ var init_auto_update = __esm({
     CHECK_INTERVAL_MS = 24 * 60 * 60 * 1e3;
     API_TIMEOUT_MS = 5e3;
     DOWNLOAD_TIMEOUT_MS = 6e4;
-    CONFIG_DIR = join20(homedir3(), ".config", "axme-code");
-    CACHE_FILE = join20(CONFIG_DIR, "update_check.json");
+    CONFIG_DIR = join23(homedir6(), ".config", "axme-code");
+    CACHE_FILE = join23(CONFIG_DIR, "update_check.json");
     updateNotification = null;
   }
 });
 
 // src/server.ts
 var server_exports = {};
-import { join as join21 } from "node:path";
-import { existsSync as existsSync10 } from "node:fs";
+import { join as join24 } from "node:path";
+import { existsSync as existsSync11 } from "node:fs";
 function getOwnedSessionIdForLogging() {
   const all = listClaudeSessionMappings(defaultProjectPath);
   const owned = all.filter((m) => m.ownerPpid === OWN_PPID);
@@ -39010,7 +39179,7 @@ function ppWithScope(project_path, scope) {
     const repoScope = scope.find((s) => s !== "all");
     if (repoScope) {
       const match = serverWorkspace.projects.find((p) => p.name === repoScope);
-      if (match) return join21(defaultProjectPath, match.path);
+      if (match) return join24(defaultProjectPath, match.path);
     }
   }
   return defaultProjectPath;
@@ -39088,7 +39257,7 @@ var init_server3 = __esm({
     init_auto_update();
     init_telemetry();
     serverCwd = process.cwd();
-    serverHasGit = existsSync10(join21(serverCwd, ".git"));
+    serverHasGit = existsSync11(join24(serverCwd, ".git"));
     serverWorkspace = detectWorkspace(serverCwd);
     isWorkspace = serverHasGit ? false : serverWorkspace.type !== "single";
     defaultProjectPath = serverCwd;
@@ -39671,7 +39840,7 @@ ${lines.join("\n")}` }] };
           source: "agent"
         });
         const { appendFileSync: appendFileSync5 } = await import("node:fs");
-        const { join: join29 } = await import("node:path");
+        const { join: join32 } = await import("node:path");
         const { AXME_CODE_DIR: AXME_CODE_DIR2 } = await Promise.resolve().then(() => (init_types(), types_exports));
         const isoDate = (/* @__PURE__ */ new Date()).toISOString().slice(0, 16).replace("T", " ");
         const shortId = sid.slice(0, 8);
@@ -39681,7 +39850,7 @@ ${args2.worklog_entry}
 
 `;
         try {
-          appendFileSync5(join29(targetPath, AXME_CODE_DIR2, "worklog.md"), worklogEntry);
+          appendFileSync5(join32(targetPath, AXME_CODE_DIR2, "worklog.md"), worklogEntry);
         } catch {
         }
         const { loadSession: loadSession2, writeSession: writeSession2 } = await Promise.resolve().then(() => (init_sessions(), sessions_exports));
@@ -39738,8 +39907,8 @@ var pre_tool_use_exports = {};
 __export(pre_tool_use_exports, {
   runPreToolUseHook: () => runPreToolUseHook
 });
-import { dirname as dirname4, join as join22, resolve as resolve7 } from "node:path";
-import { existsSync as existsSync11 } from "node:fs";
+import { dirname as dirname4, join as join25, resolve as resolve7 } from "node:path";
+import { existsSync as existsSync12 } from "node:fs";
 function splitCommandSegments(command2) {
   const segments = [];
   let current = "";
@@ -39798,7 +39967,7 @@ function deny(reason) {
 function findContainingRepo(filePath, workspaceRoot) {
   let dir = resolve7(filePath);
   try {
-    const stat = existsSync11(dir);
+    const stat = existsSync12(dir);
     if (!stat) {
       dir = dirname4(dir);
     }
@@ -39807,7 +39976,7 @@ function findContainingRepo(filePath, workspaceRoot) {
   }
   const rootResolved = resolve7(workspaceRoot);
   while (dir.startsWith(rootResolved) && dir !== rootResolved) {
-    if (existsSync11(join22(dir, ".git"))) return dir;
+    if (existsSync12(join25(dir, ".git"))) return dir;
     const parent = dirname4(dir);
     if (parent === dir) break;
     dir = parent;
@@ -39816,7 +39985,7 @@ function findContainingRepo(filePath, workspaceRoot) {
 }
 function handlePreToolUse(sessionOrigin, event) {
   const { tool_name, tool_input } = event;
-  if (!pathExists(join22(sessionOrigin, AXME_CODE_DIR))) return;
+  if (!pathExists(join25(sessionOrigin, AXME_CODE_DIR))) return;
   if (event.session_id && event.transcript_path) {
     ensureAxmeSessionForClaude(sessionOrigin, event.session_id, event.transcript_path, tool_name);
   }
@@ -39914,10 +40083,10 @@ var post_tool_use_exports = {};
 __export(post_tool_use_exports, {
   runPostToolUseHook: () => runPostToolUseHook
 });
-import { join as join23 } from "node:path";
+import { join as join26 } from "node:path";
 function handlePostToolUse(workspacePath, event) {
   const { tool_name, tool_input } = event;
-  if (!pathExists(join23(workspacePath, AXME_CODE_DIR))) return;
+  if (!pathExists(join26(workspacePath, AXME_CODE_DIR))) return;
   if (!event.session_id || !event.transcript_path) return;
   const axmeSessionId = ensureAxmeSessionForClaude(
     workspacePath,
@@ -39961,9 +40130,9 @@ var session_end_exports = {};
 __export(session_end_exports, {
   runSessionEndHook: () => runSessionEndHook
 });
-import { join as join24 } from "node:path";
+import { join as join27 } from "node:path";
 function handleSessionEnd(workspacePath, input) {
-  if (!pathExists(join24(workspacePath, AXME_CODE_DIR))) return;
+  if (!pathExists(join27(workspacePath, AXME_CODE_DIR))) return;
   if (!input.session_id) return;
   let axmeSessionId = readClaudeSessionMapping(workspacePath, input.session_id);
   if (!axmeSessionId && input.transcript_path) {
@@ -40009,7 +40178,7 @@ var init_session_end = __esm({
 });
 
 // src/transcript-parser.ts
-import { readFileSync as readFileSync15, existsSync as existsSync12 } from "node:fs";
+import { readFileSync as readFileSync15, existsSync as existsSync13 } from "node:fs";
 function shortenToolInput(name, input) {
   if (!input || typeof input !== "object") return "";
   switch (name) {
@@ -40046,7 +40215,7 @@ function shortenToolInput(name, input) {
   }
 }
 function parseTranscriptFromOffset(path, startOffset = 0) {
-  if (!existsSync12(path)) {
+  if (!existsSync13(path)) {
     return { turns: [], endOffset: startOffset, bytesRead: 0, fileSize: 0, bashCommands: [] };
   }
   let buffer;
@@ -40530,7 +40699,7 @@ async function runSingleAuditCall(opts) {
     // auto-loading the project's .claude/settings.json, but users or CI may
     // register hooks via environment or other means, so the belt-and-braces
     // env check in every hook handler is what actually stops the recursion.
-    env: { ...process.env, AXME_SKIP_HOOKS: "1", AXME_TELEMETRY_DISABLED: "1" }
+    env: buildAgentEnv()
   };
   const isMultiChunk = opts.totalChunks > 1;
   const chunkHeader = isMultiChunk ? `
@@ -40732,7 +40901,7 @@ ${freeTextAnalysis}`;
       "Bash",
       "ToolSearch"
     ],
-    env: { ...process.env, AXME_SKIP_HOOKS: "1", AXME_TELEMETRY_DISABLED: "1" }
+    env: buildAgentEnv()
   };
   const q = sdk.query({ prompt: formatPrompt, options: queryOpts });
   let result = "";
@@ -41237,15 +41406,15 @@ __export(kb_audit_exports, {
   resetKbAuditCounter: () => resetKbAuditCounter,
   writeKbAuditReport: () => writeKbAuditReport
 });
-import { join as join25 } from "node:path";
+import { join as join28 } from "node:path";
 function counterPath(projectPath) {
-  return join25(projectPath, AXME_CODE_DIR, KB_AUDIT_DIR, COUNTER_FILE);
+  return join28(projectPath, AXME_CODE_DIR, KB_AUDIT_DIR, COUNTER_FILE);
 }
 function reportsDir(projectPath) {
-  return join25(projectPath, AXME_CODE_DIR, KB_AUDIT_DIR);
+  return join28(projectPath, AXME_CODE_DIR, KB_AUDIT_DIR);
 }
 function incrementKbAuditCounter(projectPath) {
-  const dir = join25(projectPath, AXME_CODE_DIR, KB_AUDIT_DIR);
+  const dir = join28(projectPath, AXME_CODE_DIR, KB_AUDIT_DIR);
   ensureDir(dir);
   const existing = readJson(counterPath(projectPath));
   const counter = existing ?? {
@@ -41260,7 +41429,7 @@ function incrementKbAuditCounter(projectPath) {
   return { count: counter.count, recommendAudit };
 }
 function resetKbAuditCounter(projectPath) {
-  const dir = join25(projectPath, AXME_CODE_DIR, KB_AUDIT_DIR);
+  const dir = join28(projectPath, AXME_CODE_DIR, KB_AUDIT_DIR);
   ensureDir(dir);
   const counter = {
     count: 0,
@@ -41276,7 +41445,7 @@ function writeKbAuditReport(projectPath, report) {
   const dir = reportsDir(projectPath);
   ensureDir(dir);
   const date5 = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const path = join25(dir, `${date5}-report.md`);
+  const path = join28(dir, `${date5}-report.md`);
   atomicWrite(path, report);
   return path;
 }
@@ -41284,8 +41453,8 @@ function listKbAuditReports(projectPath) {
   const dir = reportsDir(projectPath);
   if (!pathExists(dir)) return [];
   try {
-    const { readdirSync: readdirSync11 } = __require("node:fs");
-    return readdirSync11(dir).filter((f) => f.endsWith("-report.md")).sort().reverse();
+    const { readdirSync: readdirSync12 } = __require("node:fs");
+    return readdirSync12(dir).filter((f) => f.endsWith("-report.md")).sort().reverse();
   } catch {
     return [];
   }
@@ -41306,7 +41475,7 @@ var session_cleanup_exports = {};
 __export(session_cleanup_exports, {
   runSessionCleanup: () => runSessionCleanup
 });
-import { join as join26 } from "node:path";
+import { join as join29 } from "node:path";
 import { appendFileSync as appendFileSync3 } from "node:fs";
 function resolveScopeRoutes(scope, workspacePath, workspaceRoot) {
   const isAll = !scope || scope.length === 0 || scope.length === 1 && scope[0] === "all";
@@ -41315,8 +41484,8 @@ function resolveScopeRoutes(scope, workspacePath, workspaceRoot) {
   const repos = [];
   for (const s of scope) {
     if (s === "all") continue;
-    const abs = join26(workspaceRoot, s);
-    if (pathExists(join26(abs, ".axme-code")) || pathExists(join26(abs, ".git"))) {
+    const abs = join29(workspaceRoot, s);
+    if (pathExists(join29(abs, ".axme-code")) || pathExists(join29(abs, ".git"))) {
       repos.push(abs);
     }
   }
@@ -41385,7 +41554,7 @@ async function runSessionCleanup(workspacePath, sessionId) {
     oracleRescanned: false,
     costUsd: 0
   };
-  if (!pathExists(join26(workspacePath, AXME_CODE_DIR))) {
+  if (!pathExists(join29(workspacePath, AXME_CODE_DIR))) {
     return { ...base, skipped: "no-storage" };
   }
   const session = loadSession(workspacePath, sessionId);
@@ -41691,7 +41860,7 @@ async function runSessionCleanup(workspacePath, sessionId) {
 ${audit.sessionSummary}
 
 `;
-          appendFileSync3(join26(workspacePath, AXME_CODE_DIR, "worklog.md"), entry);
+          appendFileSync3(join29(workspacePath, AXME_CODE_DIR, "worklog.md"), entry);
           result.worklogSummary = true;
         } catch {
         }
@@ -41910,8 +42079,8 @@ __export(cleanup_exports, {
   cleanupLegacyArtifacts: () => cleanupLegacyArtifacts,
   normalizeDecisions: () => normalizeDecisions
 });
-import { readdirSync as readdirSync10, readFileSync as readFileSync16, writeFileSync as writeFileSync5, mkdirSync as mkdirSync4, copyFileSync, rmSync as rmSync2 } from "node:fs";
-import { join as join27 } from "node:path";
+import { readdirSync as readdirSync11, readFileSync as readFileSync16, writeFileSync as writeFileSync5, mkdirSync as mkdirSync4, copyFileSync, rmSync as rmSync2 } from "node:fs";
+import { join as join30 } from "node:path";
 function cleanupLegacyArtifacts(projectPath, opts) {
   const log = opts.onProgress ?? (() => {
   });
@@ -41921,53 +42090,53 @@ function cleanupLegacyArtifacts(projectPath, opts) {
     legacyDirsRemoved: [],
     backupPath: null
   };
-  const acDir = join27(projectPath, AXME_CODE_DIR);
+  const acDir = join30(projectPath, AXME_CODE_DIR);
   if (!pathExists(acDir)) {
     log("No .axme-code/ found, nothing to clean.");
     return result;
   }
-  const backupDir = join27(acDir, "backups", `legacy-${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19)}`);
+  const backupDir = join30(acDir, "backups", `legacy-${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19)}`);
   if (!opts.dryRun) {
     mkdirSync4(backupDir, { recursive: true });
     result.backupPath = backupDir;
   }
-  const sessionsDir = join27(acDir, "sessions");
+  const sessionsDir = join30(acDir, "sessions");
   if (pathExists(sessionsDir)) {
-    for (const entry of readdirSync10(sessionsDir, { withFileTypes: true })) {
+    for (const entry of readdirSync11(sessionsDir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
-      const metaPath = join27(sessionsDir, entry.name, "meta.json");
+      const metaPath = join30(sessionsDir, entry.name, "meta.json");
       const session = readJson(metaPath);
       if (!session) continue;
       if (session.origin) continue;
       if (opts.dryRun) {
         log(`  [dry-run] would delete session ${entry.name} (no origin field)`);
       } else {
-        const backupSessionDir = join27(backupDir, "sessions", entry.name);
+        const backupSessionDir = join30(backupDir, "sessions", entry.name);
         mkdirSync4(backupSessionDir, { recursive: true });
         try {
-          copyFileSync(metaPath, join27(backupSessionDir, "meta.json"));
+          copyFileSync(metaPath, join30(backupSessionDir, "meta.json"));
         } catch {
         }
-        rmSync2(join27(sessionsDir, entry.name), { recursive: true, force: true });
+        rmSync2(join30(sessionsDir, entry.name), { recursive: true, force: true });
         log(`  deleted session ${entry.name} (no origin)`);
       }
       result.sessionsDeleted++;
     }
   }
-  const auditLogsDir2 = join27(acDir, "audit-logs");
+  const auditLogsDir2 = join30(acDir, "audit-logs");
   if (pathExists(auditLogsDir2)) {
-    for (const file2 of readdirSync10(auditLogsDir2).filter((f) => f.endsWith(".json"))) {
-      const logPath = join27(auditLogsDir2, file2);
+    for (const file2 of readdirSync11(auditLogsDir2).filter((f) => f.endsWith(".json"))) {
+      const logPath = join30(auditLogsDir2, file2);
       const auditLog = readJson(logPath);
       if (!auditLog) continue;
       if (auditLog.resume) continue;
       if (opts.dryRun) {
         log(`  [dry-run] would delete audit log ${file2} (no resume field)`);
       } else {
-        const backupLogsDir = join27(backupDir, "audit-logs");
+        const backupLogsDir = join30(backupDir, "audit-logs");
         mkdirSync4(backupLogsDir, { recursive: true });
         try {
-          copyFileSync(logPath, join27(backupLogsDir, file2));
+          copyFileSync(logPath, join30(backupLogsDir, file2));
         } catch {
         }
         removeFile(logPath);
@@ -41977,8 +42146,8 @@ function cleanupLegacyArtifacts(projectPath, opts) {
     }
   }
   const legacyPaths = [
-    join27(acDir, "pending-audits"),
-    join27(acDir, "active-session")
+    join30(acDir, "pending-audits"),
+    join30(acDir, "active-session")
   ];
   for (const p of legacyPaths) {
     if (!pathExists(p)) continue;
@@ -42000,12 +42169,12 @@ function normalizeDecisions(workspacePath, opts) {
   let filesSkipped = 0;
   let locations = 0;
   const targets = [];
-  const wsDecDir = join27(workspacePath, AXME_CODE_DIR, "decisions");
+  const wsDecDir = join30(workspacePath, AXME_CODE_DIR, "decisions");
   if (pathExists(wsDecDir)) targets.push(wsDecDir);
   try {
-    for (const entry of readdirSync10(workspacePath, { withFileTypes: true })) {
+    for (const entry of readdirSync11(workspacePath, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-      const repoDecDir = join27(workspacePath, entry.name, AXME_CODE_DIR, "decisions");
+      const repoDecDir = join30(workspacePath, entry.name, AXME_CODE_DIR, "decisions");
       if (pathExists(repoDecDir)) targets.push(repoDecDir);
     }
   } catch {
@@ -42015,8 +42184,8 @@ function normalizeDecisions(workspacePath, opts) {
     const name = decDir.split("/").slice(-3, -1).join("/");
     let updated = 0;
     try {
-      for (const file2 of readdirSync10(decDir).filter((f) => f.startsWith("D-") && f.endsWith(".md"))) {
-        const filePath = join27(decDir, file2);
+      for (const file2 of readdirSync11(decDir).filter((f) => f.startsWith("D-") && f.endsWith(".md"))) {
+        const filePath = join30(decDir, file2);
         const content = readFileSync16(filePath, "utf-8");
         if (/^status:\s/m.test(content)) {
           filesSkipped++;
@@ -42226,8 +42395,8 @@ Report summary: which repos had changes, how many decisions superseded/revoked/c
 
 // src/cli.ts
 init_js_yaml();
-import { resolve as resolve8, join as join28 } from "node:path";
-import { writeFileSync as writeFileSync6, existsSync as existsSync13, readFileSync as readFileSync17, appendFileSync as appendFileSync4, mkdirSync as mkdirSync5 } from "node:fs";
+import { resolve as resolve8, join as join31 } from "node:path";
+import { writeFileSync as writeFileSync6, existsSync as existsSync14, readFileSync as readFileSync17, appendFileSync as appendFileSync4, mkdirSync as mkdirSync5 } from "node:fs";
 
 // src/tools/init.ts
 init_engine();
@@ -42237,8 +42406,8 @@ init_memory();
 init_safety();
 init_config();
 init_sessions();
-import { join as join13 } from "node:path";
-import { existsSync as existsSync6 } from "node:fs";
+import { join as join16 } from "node:path";
+import { existsSync as existsSync7 } from "node:fs";
 
 // src/storage/deploy.ts
 init_engine();
@@ -42466,7 +42635,7 @@ init_engine();
 init_js_yaml();
 async function initProjectWithLLM(projectPath, opts) {
   const startTime = Date.now();
-  const axmeDir = join13(projectPath, AXME_CODE_DIR);
+  const axmeDir = join16(projectPath, AXME_CODE_DIR);
   const alreadyExists = pathExists(axmeDir);
   if (alreadyExists && !opts?.force) {
     const existing = listDecisions(projectPath);
@@ -42489,7 +42658,7 @@ async function initProjectWithLLM(projectPath, opts) {
     }
   }
   ensureDir(axmeDir);
-  const lockPath = join13(axmeDir, "setup.lock");
+  const lockPath = join16(axmeDir, "setup.lock");
   if (pathExists(lockPath)) {
     return {
       projectPath,
@@ -42693,7 +42862,7 @@ async function initWorkspaceWithLLM(workspacePath, opts) {
         manifest: ws.manifestPath,
         projects: ws.projects
       }, { lineWidth: 120 });
-      atomicWrite(join13(workspacePath, AXME_CODE_DIR, "workspace.yaml"), wsYaml);
+      atomicWrite(join16(workspacePath, AXME_CODE_DIR, "workspace.yaml"), wsYaml);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -42705,7 +42874,7 @@ async function initWorkspaceWithLLM(workspacePath, opts) {
   try {
     const { detectWorkspace: detectWorkspace2 } = await Promise.resolve().then(() => (init_workspace_detector(), workspace_detector_exports));
     const ws = detectWorkspace2(workspacePath);
-    const gitRepos = ws.projects.filter((p) => existsSync6(join13(workspacePath, p.path, ".git")));
+    const gitRepos = ws.projects.filter((p) => existsSync7(join16(workspacePath, p.path, ".git")));
     log(`Phase 2: Scanning ${gitRepos.length} repos (${CONCURRENCY} parallel)...`);
     let completed = 0;
     for (let i = 0; i < gitRepos.length; i += CONCURRENCY) {
@@ -42714,7 +42883,7 @@ async function initWorkspaceWithLLM(workspacePath, opts) {
       const totalBatches = Math.ceil(gitRepos.length / CONCURRENCY);
       log(`Batch ${batchNum}/${totalBatches}: ${batch.map((p) => p.name).join(", ")}`);
       const batchResults = await Promise.allSettled(
-        batch.map((project) => initProjectWithLLM(join13(workspacePath, project.path), { presets: opts?.presets, onProgress: log }))
+        batch.map((project) => initProjectWithLLM(join16(workspacePath, project.path), { presets: opts?.presets, onProgress: log }))
       );
       for (let j = 0; j < batchResults.length; j++) {
         const settled = batchResults[j];
@@ -42731,7 +42900,7 @@ async function initWorkspaceWithLLM(workspacePath, opts) {
         } else {
           log(`  [${completed}/${gitRepos.length}] ${batch[j].name}: FAILED (${settled.reason?.message ?? "unknown"})`);
           projectResults.push({
-            projectPath: join13(workspacePath, batch[j].path),
+            projectPath: join16(workspacePath, batch[j].path),
             created: false,
             oracle: { files: 0, llm: false },
             decisions: { count: 0, fromScan: 0, fromPresets: 0 },
@@ -42760,6 +42929,60 @@ init_status();
 init_workspace_detector();
 init_engine();
 init_memory();
+init_auth_detect();
+init_auth_config();
+
+// src/utils/auth-prompt.ts
+import { createInterface } from "node:readline";
+function formatDetectionBlock(options) {
+  const lines = [];
+  lines.push("Detected on this machine:");
+  if (options.apiKey.present) {
+    lines.push(`  [1] Anthropic API key: ${options.apiKey.masked} (ANTHROPIC_API_KEY)`);
+  } else {
+    lines.push("  [1] Anthropic API key \u2014 not set");
+  }
+  if (options.subscription.present) {
+    const detail = options.subscription.details ? ` (${options.subscription.details})` : "";
+    lines.push(`  [2] Claude Code subscription${detail}`);
+  } else if (options.subscription.binaryFound) {
+    lines.push("  [2] Claude Code subscription \u2014 binary found but no saved login");
+    lines.push("      (run `claude` then `/login` to authenticate)");
+  } else {
+    lines.push("  [2] Claude Code subscription \u2014 claude binary not found on PATH");
+  }
+  return lines.join("\n");
+}
+function defaultChoice(options) {
+  if (options.subscription.present && !options.apiKey.present) return "subscription";
+  if (options.apiKey.present && !options.subscription.present) return "api_key";
+  return options.subscription.present ? "subscription" : "api_key";
+}
+function hasAnyAuth(options) {
+  return options.apiKey.present || options.subscription.present;
+}
+async function promptAuthChoice(options) {
+  const def = defaultChoice(options);
+  const defLabel = def === "subscription" ? "2" : "1";
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    while (true) {
+      const answer = await new Promise((resolve9) => {
+        rl.question(`Which should axme-code use? [1=api_key, 2=subscription, default ${defLabel}]: `, resolve9);
+      });
+      const trimmed = answer.trim().toLowerCase();
+      if (trimmed === "") return def;
+      if (trimmed === "1" || trimmed === "api_key" || trimmed === "key") return "api_key";
+      if (trimmed === "2" || trimmed === "subscription" || trimmed === "sub") return "subscription";
+      if (trimmed === "q" || trimmed === "quit" || trimmed === "cancel") return null;
+      process.stdout.write("  Enter 1, 2, or q to cancel.\n");
+    }
+  } finally {
+    rl.close();
+  }
+}
+
+// src/cli.ts
 init_types();
 var args = process.argv.slice(2);
 var command = args[0];
@@ -42847,9 +43070,9 @@ axme_context, axme_oracle, axme_decisions, axme_memories, axme_save_memory, axme
 axme_update_safety, axme_safety, axme_status, axme_worklog, axme_workspace
 `;
 function generateClaudeMd(projectPath, isWorkspace2) {
-  const claudeMdPath = join28(projectPath, "CLAUDE.md");
+  const claudeMdPath = join31(projectPath, "CLAUDE.md");
   const section = isWorkspace2 ? WORKSPACE_CLAUDE_MD : SINGLE_REPO_CLAUDE_MD;
-  if (existsSync13(claudeMdPath)) {
+  if (existsSync14(claudeMdPath)) {
     const content = readFileSync17(claudeMdPath, "utf-8");
     if (content.includes("## AXME Code")) {
       const sectionStart = content.indexOf("## AXME Code");
@@ -42870,9 +43093,38 @@ function hasAuth() {
   const { env } = process;
   const pathDirs = (env.PATH || "").split(":");
   for (const dir of pathDirs) {
-    if (existsSync13(join28(dir, "claude"))) return true;
+    if (existsSync14(join31(dir, "claude"))) return true;
   }
   return false;
+}
+function printAuthStatus() {
+  const options = detectAuthOptions();
+  console.log(formatDetectionBlock(options));
+  const saved = loadAuthConfig();
+  if (saved) {
+    console.log(`
+Current mode: ${saved.mode} (saved ${saved.chosenAt})`);
+    console.log(`Config file:  ${authConfigPath()}`);
+  } else {
+    console.log("\nCurrent mode: not configured (using heuristic fallback)");
+    console.log(`Config file:  ${authConfigPath()} (will be created on first choice)`);
+  }
+}
+async function ensureAuthConfiguredForSetup() {
+  if (loadAuthConfig()) return;
+  if (!process.stdin.isTTY) return;
+  const options = detectAuthOptions();
+  if (!hasAnyAuth(options)) return;
+  console.log("\nAuthentication setup for LLM scanners");
+  console.log(formatDetectionBlock(options));
+  console.log("");
+  const choice = await promptAuthChoice(options);
+  if (!choice) {
+    console.log("  Auth selection cancelled. Heuristic fallback will be used.");
+    return;
+  }
+  saveAuthConfig(choice);
+  console.log(`  Saved auth mode: ${choice} (${authConfigPath()})`);
 }
 function generateWorkspaceYaml(workspacePath, ws) {
   const wsYaml = jsYaml.dump({
@@ -42881,15 +43133,15 @@ function generateWorkspaceYaml(workspacePath, ws) {
     manifest: ws.manifestPath,
     projects: ws.projects
   }, { lineWidth: 120 });
-  ensureDir(join28(workspacePath, AXME_CODE_DIR));
-  atomicWrite(join28(workspacePath, AXME_CODE_DIR, "workspace.yaml"), wsYaml);
+  ensureDir(join31(workspacePath, AXME_CODE_DIR));
+  atomicWrite(join31(workspacePath, AXME_CODE_DIR, "workspace.yaml"), wsYaml);
   console.log("  workspace.yaml: created");
 }
 function configureHooks(projectPath) {
-  const claudeDir = join28(projectPath, ".claude");
-  const settingsPath = join28(claudeDir, "settings.json");
+  const claudeDir = join31(projectPath, ".claude");
+  const settingsPath = join31(claudeDir, "settings.json");
   let settings = {};
-  if (existsSync13(settingsPath)) {
+  if (existsSync14(settingsPath)) {
     try {
       settings = JSON.parse(readFileSync17(settingsPath, "utf-8"));
     } catch {
@@ -42957,6 +43209,9 @@ Usage:
   axme-code setup [path] [--force]         Initialize project (LLM scan + .mcp.json + CLAUDE.md)
   axme-code serve                         Start MCP server (stdio transport)
   axme-code status [path]                 Show project status
+  axme-code auth                          Re-detect and choose auth mode (subscription/api_key)
+  axme-code auth status                   Show current auth mode + detected options
+  axme-code auth use <subscription|api_key>  Set auth mode non-interactively
   axme-code cleanup legacy-artifacts [--dry-run]  Remove pre-PR#7 sessions/logs
   axme-code cleanup decisions-normalize [--dry-run]  Add status:active to decisions
   axme-code audit-kb [path] [--all-repos]             KB audit: dedup, conflicts, compaction
@@ -42978,10 +43233,10 @@ async function main2() {
       const pluginMode = args.includes("--plugin") || !!process.env.CLAUDE_PLUGIN_ROOT;
       const setupArgs = args.filter((a) => a !== "--force" && a !== "--plugin");
       const projectPath = resolve8(setupArgs[1] || ".");
-      const hasGitDir = existsSync13(join28(projectPath, ".git"));
+      const hasGitDir = existsSync14(join31(projectPath, ".git"));
       const ws = detectWorkspace(projectPath);
       const isWorkspace2 = hasGitDir ? false : ws.type !== "single";
-      const childRepos = isWorkspace2 ? ws.projects.filter((p) => existsSync13(join28(projectPath, p.path, ".git"))).length : 0;
+      const childRepos = isWorkspace2 ? ws.projects.filter((p) => existsSync14(join31(projectPath, p.path, ".git"))).length : 0;
       let setupOutcome = "failed";
       let setupMethod = "deterministic";
       let setupPhaseFailed = null;
@@ -43024,6 +43279,7 @@ Error: No Claude authentication found.
         await sendSetupTelemetry();
         process.exit(1);
       }
+      await ensureAuthConfiguredForSetup();
       try {
         if (isWorkspace2) {
           const { workspaceResult, projectResults } = await initWorkspaceWithLLM(projectPath, { onProgress: console.log });
@@ -43078,13 +43334,13 @@ Error: No Claude authentication found.
         const mcpPaths = [projectPath];
         if (isWorkspace2) {
           for (const p of ws.projects) {
-            mcpPaths.push(join28(projectPath, p.path));
+            mcpPaths.push(join31(projectPath, p.path));
           }
         }
         for (const dir of mcpPaths) {
-          const mcpPath = join28(dir, ".mcp.json");
+          const mcpPath = join31(dir, ".mcp.json");
           let mcpConfig = {};
-          if (existsSync13(mcpPath)) {
+          if (existsSync14(mcpPath)) {
             try {
               mcpConfig = JSON.parse(readFileSync17(mcpPath, "utf-8"));
             } catch {
@@ -43105,8 +43361,8 @@ Error: No Claude authentication found.
       } else {
         console.log(`  Hooks: skipped (plugin provides hooks)`);
       }
-      const gitignorePath = join28(projectPath, ".gitignore");
-      if (existsSync13(gitignorePath)) {
+      const gitignorePath = join31(projectPath, ".gitignore");
+      if (existsSync14(gitignorePath)) {
         const content = readFileSync17(gitignorePath, "utf-8");
         if (!content.includes(".axme-code")) {
           writeFileSync6(gitignorePath, content.trimEnd() + "\n.axme-code/\n", "utf-8");
@@ -43116,7 +43372,7 @@ Error: No Claude authentication found.
         writeFileSync6(gitignorePath, ".axme-code/\n", "utf-8");
         console.log("  .gitignore: created with .axme-code/");
       }
-      const repoCount = isWorkspace2 ? ws.projects.filter((p) => existsSync13(join28(projectPath, p.path, ".git"))).length : 0;
+      const repoCount = isWorkspace2 ? ws.projects.filter((p) => existsSync14(join31(projectPath, p.path, ".git"))).length : 0;
       writeBootstrapToAxmeMemory(projectPath, isWorkspace2, repoCount);
       setupOutcome = setupMethod === "llm" ? "success" : "fallback";
       await sendSetupTelemetry();
@@ -43150,7 +43406,7 @@ Error: No Claude authentication found.
     }
     case "check-init": {
       const checkPath = resolve8(args[1] || ".");
-      const claudeMdPath = join28(checkPath, "CLAUDE.md");
+      const claudeMdPath = join31(checkPath, "CLAUDE.md");
       const axmeSection = `## AXME Code
 
 ### Session Start (MANDATORY)
@@ -43158,7 +43414,7 @@ Call axme_context at the start of every session.
 If it returns "not initialized", run \`axme-code setup --plugin\` via Bash tool immediately.
 Do NOT skip \u2014 without context you will miss critical project rules.
 `;
-      if (existsSync13(claudeMdPath)) {
+      if (existsSync14(claudeMdPath)) {
         const content = readFileSync17(claudeMdPath, "utf-8");
         if (!content.includes("## AXME Code")) {
           writeFileSync6(claudeMdPath, content.trimEnd() + "\n\n" + axmeSection, "utf-8");
@@ -43298,6 +43554,51 @@ Recent errors:`);
         }
       }
       break;
+    }
+    case "auth": {
+      const sub = args[1];
+      if (sub === "status" || sub === "show") {
+        printAuthStatus();
+        break;
+      }
+      if (sub === "use" || sub === "set") {
+        const mode = args[2];
+        if (mode !== "subscription" && mode !== "api_key") {
+          console.error("Usage: axme-code auth use <subscription|api_key>");
+          process.exit(1);
+        }
+        saveAuthConfig(mode);
+        console.log(`Saved auth mode: ${mode} (${authConfigPath()})`);
+        break;
+      }
+      if (sub === void 0 || sub === "choose") {
+        const options = detectAuthOptions();
+        console.log("Authentication setup for LLM scanners");
+        console.log(formatDetectionBlock(options));
+        const saved = loadAuthConfig();
+        if (saved) console.log(`
+Current mode: ${saved.mode} (saved ${saved.chosenAt})`);
+        console.log("");
+        if (!hasAnyAuth(options)) {
+          console.error("No authentication detected. Set ANTHROPIC_API_KEY or run `claude /login`, then re-run `axme-code auth`.");
+          process.exit(1);
+        }
+        if (!process.stdin.isTTY) {
+          console.error("`axme-code auth` requires an interactive terminal. Use `axme-code auth use <subscription|api_key>` non-interactively.");
+          process.exit(1);
+        }
+        const choice = await promptAuthChoice(options);
+        if (!choice) {
+          console.log("Cancelled. No change.");
+          break;
+        }
+        saveAuthConfig(choice);
+        console.log(`Saved auth mode: ${choice} (${authConfigPath()})`);
+        break;
+      }
+      console.error(`Unknown 'auth' subcommand: ${sub}`);
+      console.error("Available: (none)|choose, status|show, use|set <subscription|api_key>");
+      process.exit(1);
     }
     case "help":
     case "--help":

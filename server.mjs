@@ -6907,7 +6907,7 @@ var AXME_CODE_VERSION, AXME_CODE_DIR, DEFAULT_MODEL, DEFAULT_AUDITOR_MODEL, DEFA
 var init_types = __esm({
   "src/types.ts"() {
     "use strict";
-    AXME_CODE_VERSION = true ? "0.2.8" : "0.0.0-dev";
+    AXME_CODE_VERSION = true ? "0.2.9" : "0.0.0-dev";
     AXME_CODE_DIR = ".axme-code";
     DEFAULT_MODEL = "claude-sonnet-4-6";
     DEFAULT_AUDITOR_MODEL = "claude-sonnet-4-6";
