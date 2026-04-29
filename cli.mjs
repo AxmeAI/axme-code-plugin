@@ -2668,7 +2668,6 @@ var init_js_yaml = __esm({
 
 // src/storage/engine.ts
 import {
-  writeFileSync,
   writeSync,
   readFileSync,
   renameSync,
@@ -2688,9 +2687,9 @@ function atomicWrite(filePath, content) {
   mkdirSync(dir, { recursive: true });
   const tmpPath = join(dir, `.tmp-${randomUUID()}`);
   try {
-    writeFileSync(tmpPath, content, "utf-8");
-    const fd = openSync(tmpPath, "r");
+    const fd = openSync(tmpPath, "w");
     try {
+      writeSync(fd, Buffer.from(content, "utf-8"));
       fsyncSync(fd);
     } finally {
       closeSync(fd);
@@ -2767,7 +2766,7 @@ var AXME_CODE_VERSION, AXME_CODE_DIR, DEFAULT_MODEL, DEFAULT_AUDITOR_MODEL, DEFA
 var init_types = __esm({
   "src/types.ts"() {
     "use strict";
-    AXME_CODE_VERSION = true ? "0.2.9" : "0.0.0-dev";
+    AXME_CODE_VERSION = true ? "0.5.0" : "0.0.0-dev";
     AXME_CODE_DIR = ".axme-code";
     DEFAULT_MODEL = "claude-sonnet-4-6";
     DEFAULT_AUDITOR_MODEL = "claude-sonnet-4-6";
@@ -2775,7 +2774,8 @@ var init_types = __esm({
       model: DEFAULT_MODEL,
       auditorModel: DEFAULT_AUDITOR_MODEL,
       reviewEnabled: true,
-      presets: ["essential-safety", "ai-agent-guardrails"]
+      presets: ["essential-safety", "ai-agent-guardrails"],
+      contextMode: "full"
     };
     DEFAULT_AGENT_PERMISSIONS = {
       architect: "readonly",
@@ -3215,7 +3215,7 @@ __export(decisions_exports, {
   toSlug: () => toSlug
 });
 import { readFileSync as readFileSync4, readdirSync as readdirSync3, writeFileSync as writeFileSync2 } from "node:fs";
-import { join as join4, resolve } from "node:path";
+import { join as join4, resolve, basename } from "node:path";
 function initDecisionStore(projectPath) {
   ensureDir(decisionsDir(projectPath));
 }
@@ -3334,7 +3334,7 @@ function enforceableDecisionsContext(projectPath) {
 }
 function saveScopedDecisions(decisions, projectPath, workspacePath) {
   let saved = 0, crossProject = 0;
-  const projectName = projectPath.split("/").pop() ?? "";
+  const projectName = basename(projectPath);
   for (const d of decisions) {
     const scope = d.scope;
     const isAllScope = !scope || scope.length === 0 || scope.length === 1 && scope[0] === "all";
@@ -3368,7 +3368,7 @@ function saveScopedDecisions(decisions, projectPath, workspacePath) {
 function listScopedDecisions(projectPath, workspacePath) {
   const projectDecisions = listDecisions(projectPath);
   if (!workspacePath || workspacePath === projectPath) return projectDecisions;
-  const projectName = projectPath.split("/").pop() ?? "";
+  const projectName = basename(projectPath);
   const wsDecisions = listDecisions(workspacePath);
   const relevantWs = wsDecisions.filter(
     (d) => d.scope && (d.scope.includes(projectName) || d.scope.includes("all"))
@@ -3541,7 +3541,7 @@ __export(memory_exports, {
   toMemorySlug: () => toMemorySlug
 });
 import { readFileSync as readFileSync5, readdirSync as readdirSync4 } from "node:fs";
-import { join as join5, resolve as resolve2 } from "node:path";
+import { join as join5, resolve as resolve2, basename as basename2 } from "node:path";
 function initMemoryStore(projectPath) {
   ensureDir(join5(memoryDir(projectPath), FEEDBACK_DIR));
   ensureDir(join5(memoryDir(projectPath), PATTERNS_DIR));
@@ -3557,7 +3557,7 @@ function saveMemories(projectPath, memories) {
 }
 function saveScopedMemories(memories, projectPath, workspacePath) {
   let saved = 0, crossProject = 0;
-  const projectName = projectPath.split("/").pop() ?? "";
+  const projectName = basename2(projectPath);
   for (const m of memories) {
     const scope = m.scope;
     const isAllScope = !scope || scope.length === 0 || scope.length === 1 && scope[0] === "all";
@@ -3618,7 +3618,7 @@ function listMemories(projectPath, type2) {
 function listScopedMemories(projectPath, workspacePath) {
   const projectMemories = listMemories(projectPath);
   if (!workspacePath || workspacePath === projectPath) return projectMemories;
-  const projectName = projectPath.split("/").pop() ?? "";
+  const projectName = basename2(projectPath);
   const wsMemories = listMemories(workspacePath);
   const relevantWs = wsMemories.filter(
     (m) => m.scope && (m.scope.includes(projectName) || m.scope.includes("all"))
@@ -3793,7 +3793,7 @@ __export(safety_exports, {
   writeSafetyRules: () => writeSafetyRules
 });
 import { readFileSync as readFileSync6 } from "node:fs";
-import { join as join6, resolve as resolve3 } from "node:path";
+import { join as join6, resolve as resolve3, basename as basename3 } from "node:path";
 import { execSync } from "node:child_process";
 import { homedir } from "node:os";
 function defaultRules() {
@@ -4116,7 +4116,7 @@ function checkFilePath(rules, filePath, operation) {
 }
 function matchesPattern(filePath, pattern) {
   if (filePath === pattern || filePath.startsWith(pattern)) return true;
-  const fileName = filePath.split("/").pop() ?? "";
+  const fileName = basename3(filePath);
   if (fileName === pattern) return true;
   if (pattern.includes("*")) {
     const starIdx = pattern.indexOf("*");
@@ -4181,7 +4181,7 @@ function saveScopedSafetyRule(ruleType, value, scope, projectPath, workspacePath
     }
   } else {
     updateSafetyRule(projectPath, ruleType, value);
-    repos.push(projectPath.split("/").pop() ?? "");
+    repos.push(basename3(projectPath));
   }
   return { target: "scoped", repos };
 }
@@ -4332,12 +4332,25 @@ function formatConfig(config2) {
     "# Applied preset bundles",
     `presets:`,
     ...config2.presets.map((p) => `  - ${p}`),
+    "",
+    "# Context-loading mode at session start.",
+    "#   full   \u2014 every memory and decision body loaded (default; best for KBs <=100 entries)",
+    "#   search \u2014 only catalog loaded, bodies fetched via axme_get_memory / axme_get_decision /",
+    "#            axme_search_kb. Recommended for KBs >100 entries. Requires embeddings runtime,",
+    "#            installed by: axme-code config set context.mode search",
+    "context:",
+    `  mode: ${config2.contextMode}`,
     ""
   ].join("\n");
 }
 function parseConfig(content) {
   const doc = jsYaml.load(content);
   if (!doc || typeof doc !== "object") return { ...DEFAULT_PROJECT_CONFIG };
+  let contextMode = DEFAULT_PROJECT_CONFIG.contextMode;
+  const ctxRaw = doc.context;
+  if (ctxRaw && typeof ctxRaw === "object" && (ctxRaw.mode === "full" || ctxRaw.mode === "search")) {
+    contextMode = ctxRaw.mode;
+  }
   return {
     model: String(doc.model ?? DEFAULT_PROJECT_CONFIG.model),
     auditorModel: String(doc.auditor_model ?? DEFAULT_PROJECT_CONFIG.auditorModel),
@@ -4350,7 +4363,8 @@ function parseConfig(content) {
 `);
       }
       return true;
-    }) : DEFAULT_PROJECT_CONFIG.presets
+    }) : DEFAULT_PROJECT_CONFIG.presets,
+    contextMode
   };
 }
 var CONFIG_FILE;
@@ -4770,12 +4784,9 @@ function attachClaudeSession(projectPath, axmeSessionId, ref) {
   if (!ref.id || !ref.transcriptPath) return;
   let session = loadSession(projectPath, axmeSessionId);
   if (!session) {
+    const waitArr = new Int32Array(new SharedArrayBuffer(4));
     for (let retry = 0; retry < 3 && !session; retry++) {
-      const { setTimeout: wait } = __require("node:timers/promises");
-      try {
-        __require("child_process").execSync("sleep 0.05");
-      } catch {
-      }
+      Atomics.wait(waitArr, 0, 0, 50);
       session = loadSession(projectPath, axmeSessionId);
     }
     if (!session) return;
@@ -4818,7 +4829,7 @@ var init_sessions = __esm({
     ];
     RETRYABLE_MAX_ATTEMPTS = 5;
     LOCK_STALE_MS = 5e3;
-    LOCK_WAIT_MS = 500;
+    LOCK_WAIT_MS = 3e3;
     LOCK_POLL_MS = 50;
     MAX_AUDIT_ATTEMPTS = 1;
   }
@@ -5502,9 +5513,17 @@ var init_auth_config = __esm({
 });
 
 // src/utils/agent-options.ts
+var agent_options_exports = {};
+__export(agent_options_exports, {
+  _resetFindClaudePath: () => _resetFindClaudePath,
+  buildAgentEnv: () => buildAgentEnv,
+  buildAgentQueryOptions: () => buildAgentQueryOptions,
+  claudePathForSdk: () => claudePathForSdk,
+  findClaudePath: () => findClaudePath
+});
 import { execSync as execSync2 } from "node:child_process";
 import { existsSync as existsSync5, readdirSync as readdirSync8 } from "node:fs";
-import { join as join14 } from "node:path";
+import { dirname as dirname3, join as join14 } from "node:path";
 import { homedir as homedir4 } from "node:os";
 function findClaudePath() {
   if (_claudePath !== void 0) return _claudePath || void 0;
@@ -5517,10 +5536,36 @@ function findClaudePath() {
     return _claudePath;
   }
   try {
-    const p = execSync2("which claude", { encoding: "utf-8", timeout: 5e3 }).trim();
-    if (p && existsSync5(p)) {
-      _claudePath = p;
-      return _claudePath;
+    const lookup = process.platform === "win32" ? "where.exe claude" : "which claude";
+    const p = execSync2(lookup, { encoding: "utf-8", timeout: 5e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    const lines = p.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    if (process.platform === "win32") {
+      const cmd = lines.find((r) => /\\claude\.cmd$/i.test(r));
+      if (cmd) {
+        const exeCandidate = join14(
+          dirname3(cmd),
+          "node_modules",
+          "@anthropic-ai",
+          "claude-code",
+          "bin",
+          "claude.exe"
+        );
+        if (existsSync5(exeCandidate)) {
+          _claudePath = exeCandidate;
+          return _claudePath;
+        }
+      }
+      const directExe = lines.find((r) => /\.exe$/i.test(r) && existsSync5(r));
+      if (directExe) {
+        _claudePath = directExe;
+        return _claudePath;
+      }
+    } else {
+      const first = lines[0];
+      if (first && existsSync5(first)) {
+        _claudePath = first;
+        return _claudePath;
+      }
     }
   } catch {
   }
@@ -5553,6 +5598,12 @@ function findClaudePath() {
   _claudePath = "";
   return void 0;
 }
+function _resetFindClaudePath() {
+  _claudePath = void 0;
+}
+function claudePathForSdk() {
+  return findClaudePath();
+}
 function buildAgentEnv() {
   const env = {
     ...process.env,
@@ -5566,7 +5617,7 @@ function buildAgentEnv() {
 }
 function buildAgentQueryOptions(base, role) {
   const tools = ROLE_TOOLS[role];
-  const claudePath = findClaudePath();
+  const claudePath = claudePathForSdk();
   return {
     cwd: base.cwd,
     model: base.model,
@@ -6264,12 +6315,12 @@ __export(workspace_detector_exports, {
   detectWorkspace: () => detectWorkspace
 });
 import { readFileSync as readFileSync11, readdirSync as readdirSync9, existsSync as existsSync6, statSync as statSync4 } from "node:fs";
-import { join as join15, resolve as resolve5, dirname as dirname3, basename } from "node:path";
+import { join as join15, resolve as resolve5, dirname as dirname4, basename as basename4 } from "node:path";
 function detectWorkspace(cwd) {
   const root = resolve5(cwd);
   const result = detectVSCodeWorkspace(root) ?? detectDotnetSolution(root) ?? detectJetBrains(root) ?? detectSublime(root) ?? detectRush(root) ?? detectPnpmWorkspace(root) ?? detectNpmWorkspace(root) ?? detectLerna(root) ?? detectNx(root) ?? detectGradle(root) ?? detectMaven(root) ?? detectGitSubmodules(root) ?? detectMultiGit(root);
   if (!result) {
-    return { type: "single", root, projects: [{ path: ".", name: basename(root) }], manifestPath: null };
+    return { type: "single", root, projects: [{ path: ".", name: basename4(root) }], manifestPath: null };
   }
   return enrichWithGitRepos(root, result);
 }
@@ -6297,7 +6348,7 @@ function detectVSCodeWorkspace(root) {
     const cleaned = raw.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
     const data = JSON.parse(cleaned);
     if (!data.folders || !Array.isArray(data.folders)) return null;
-    const projects = data.folders.map((f) => ({ path: f.path ?? ".", name: f.name ?? basename(f.path ?? ".") })).filter((p) => p.path !== ".");
+    const projects = data.folders.map((f) => ({ path: f.path ?? ".", name: f.name ?? basename4(f.path ?? ".") })).filter((p) => p.path !== ".");
     if (projects.length === 0) return null;
     return { type: "vscode", root, projects, manifestPath: filePath };
   } catch {
@@ -6318,7 +6369,7 @@ function detectDotnetSolution(root) {
       if (content.substring(match.index - 40, match.index).includes(solutionFolderGuid)) continue;
       const name = match[1];
       const projPath = match[2].replace(/\\/g, "/");
-      const dir = dirname3(projPath);
+      const dir = dirname4(projPath);
       if (dir && dir !== "." && !projects.some((p) => p.path === dir)) {
         projects.push({ path: dir, name });
       }
@@ -6338,9 +6389,9 @@ function detectJetBrains(root) {
     const projects = [];
     let match;
     while ((match = moduleRegex.exec(content)) !== null) {
-      const dir = dirname3(match[1]);
+      const dir = dirname4(match[1]);
       if (dir && dir !== "." && !projects.some((p) => p.path === dir)) {
-        projects.push({ path: dir, name: basename(dir) });
+        projects.push({ path: dir, name: basename4(dir) });
       }
     }
     if (projects.length < 2) return null;
@@ -6356,7 +6407,7 @@ function detectSublime(root) {
   try {
     const data = JSON.parse(readFileSync11(filePath, "utf-8"));
     if (!data.folders || !Array.isArray(data.folders)) return null;
-    const projects = data.folders.filter((f) => f.path && f.path !== ".").map((f) => ({ path: f.path, name: f.name ?? basename(f.path) }));
+    const projects = data.folders.filter((f) => f.path && f.path !== ".").map((f) => ({ path: f.path, name: f.name ?? basename4(f.path) }));
     if (projects.length < 2) return null;
     return { type: "sublime", root, projects, manifestPath: filePath };
   } catch {
@@ -6371,7 +6422,7 @@ function detectRush(root) {
     if (!data.projects || !Array.isArray(data.projects)) return null;
     const projects = data.projects.map((p) => ({
       path: p.projectFolder,
-      name: p.packageName ?? basename(p.projectFolder)
+      name: p.packageName ?? basename4(p.projectFolder)
     }));
     if (projects.length < 2) return null;
     return { type: "rush", root, projects, manifestPath: filePath };
@@ -6459,7 +6510,7 @@ function detectGradle(root) {
       for (const mod of modules) {
         const path = mod.replace(/:/g, "/");
         if (path && !projects.some((p) => p.path === path)) {
-          projects.push({ path, name: basename(path) });
+          projects.push({ path, name: basename4(path) });
         }
       }
     }
@@ -6480,7 +6531,7 @@ function detectMaven(root) {
     while ((match = moduleRegex.exec(content)) !== null) {
       const path = match[1].trim();
       if (path && !projects.some((p) => p.path === path)) {
-        projects.push({ path, name: basename(path) });
+        projects.push({ path, name: basename4(path) });
       }
     }
     if (projects.length < 2) return null;
@@ -6499,7 +6550,7 @@ function detectGitSubmodules(root) {
     let match;
     while ((match = pathRegex.exec(content)) !== null) {
       const path = match[1].trim();
-      if (path) projects.push({ path, name: basename(path) });
+      if (path) projects.push({ path, name: basename4(path) });
     }
     if (projects.length < 2) return null;
     return { type: "submodules", root, projects, manifestPath: filePath };
@@ -6554,7 +6605,7 @@ function resolveGlobs(root, globs) {
       const fullPath = join15(root, glob);
       if (existsSync6(fullPath) && isDir(fullPath)) {
         if (!projects.some((p) => p.path === glob)) {
-          projects.push({ path: glob, name: basename(glob) });
+          projects.push({ path: glob, name: basename4(glob) });
         }
       }
     }
@@ -38072,6 +38123,141 @@ var init_stdio2 = __esm({
   }
 });
 
+// src/storage/embeddings.ts
+import { createRequire } from "node:module";
+import { existsSync as existsSync9, statSync as statSync5 } from "node:fs";
+import { homedir as homedir6 } from "node:os";
+import { join as join19 } from "node:path";
+import { pathToFileURL } from "node:url";
+function indexDir(projectPath) {
+  return join19(projectPath, ".axme-code", INDEX_DIRNAME);
+}
+function embeddingsPath(projectPath) {
+  return join19(indexDir(projectPath), EMBEDDINGS_FILENAME);
+}
+function runtimeDir() {
+  return RUNTIME_DIR;
+}
+function isRuntimeInstalled() {
+  return existsSync9(join19(RUNTIME_DIR, "node_modules", "@huggingface", "transformers"));
+}
+async function loadEmbedder() {
+  if (_cachedEmbedder) return _cachedEmbedder;
+  if (!isRuntimeInstalled()) return null;
+  const runtimeRequire = createRequire(join19(RUNTIME_DIR, "node_modules", ".package-lock.json"));
+  let mod;
+  try {
+    const requirePath = runtimeRequire.resolve("@huggingface/transformers");
+    mod = await import(pathToFileURL(requirePath).href);
+  } catch (e) {
+    const msg = e?.message ?? String(e);
+    if (process.platform === "win32" && /could not be found|onnxruntime_binding\.node/i.test(msg)) {
+      process.stderr.write(
+        `AXME: failed to load semantic-search runtime. The most common cause on Windows is
+      a missing Microsoft Visual C++ Redistributable (required by onnxruntime-node).
+      Install from https://aka.ms/vs/17/release/vc_redist.x64.exe and retry
+      \`axme-code config set context.mode search\` (or \`axme-code reindex\`).
+      Underlying error: ${msg}
+`
+      );
+    } else {
+      process.stderr.write(`AXME: failed to load semantic-search runtime: ${msg}
+`);
+    }
+    return null;
+  }
+  const pipe2 = await mod.pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2", {
+    dtype: "fp32"
+  });
+  async function embed(text) {
+    const result = await pipe2(text, { pooling: "mean", normalize: true });
+    return new Float32Array(result.data);
+  }
+  _cachedEmbedder = { embed, dimension: EMBED_DIMENSION };
+  return _cachedEmbedder;
+}
+function _resetEmbedderCache() {
+  _cachedEmbedder = null;
+}
+function cosine(a, b) {
+  let s = 0;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) s += a[i] * b[i];
+  return s;
+}
+function loadEmbeddings(projectPath) {
+  const raw = readSafe(embeddingsPath(projectPath));
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed;
+  } catch {
+    return [];
+  }
+}
+function saveEmbeddings(projectPath, records) {
+  _writeQueue = _writeQueue.then(() => {
+    ensureDir(indexDir(projectPath));
+    const json3 = JSON.stringify(records);
+    atomicWrite(embeddingsPath(projectPath), json3);
+  }).catch(() => {
+  });
+  return _writeQueue;
+}
+function topK(records, qvec, k, type2) {
+  const filtered = type2 ? records.filter((r) => r.type === type2) : records;
+  const scored = filtered.map((r) => ({
+    slug: r.slug,
+    type: r.type,
+    title: r.title,
+    description: r.description,
+    score: cosine(qvec, r.embedding)
+  }));
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, Math.min(k, scored.length));
+}
+async function upsertEmbedding(projectPath, embedder, record2, text) {
+  const vec = await embedder.embed(text);
+  const records = loadEmbeddings(projectPath);
+  const idx = records.findIndex((r) => r.slug === record2.slug && r.type === record2.type);
+  const next = { ...record2, embedding: Array.from(vec) };
+  if (idx >= 0) records[idx] = next;
+  else records.push(next);
+  await saveEmbeddings(projectPath, records);
+  return true;
+}
+async function embedKbEntry(projectPath, slug, type2, title, description, contextMode) {
+  if (contextMode !== "search") return;
+  try {
+    const embedder = await loadEmbedder();
+    if (!embedder) return;
+    const text = `${title}. ${description}`;
+    await upsertEmbedding(
+      projectPath,
+      embedder,
+      { slug, type: type2, title, description, mtime: Date.now() },
+      text
+    );
+  } catch (e) {
+    process.stderr.write(`AXME embed: failed to index ${type2} '${slug}': ${e.message}
+`);
+  }
+}
+var EMBED_DIMENSION, RUNTIME_DIR, INDEX_DIRNAME, EMBEDDINGS_FILENAME, _cachedEmbedder, _writeQueue;
+var init_embeddings = __esm({
+  "src/storage/embeddings.ts"() {
+    "use strict";
+    init_engine();
+    EMBED_DIMENSION = 384;
+    RUNTIME_DIR = join19(homedir6(), ".local", "share", "axme-code", "runtime");
+    INDEX_DIRNAME = "_index";
+    EMBEDDINGS_FILENAME = "embeddings.json";
+    _cachedEmbedder = null;
+    _writeQueue = Promise.resolve();
+  }
+});
+
 // src/storage/workspace-merge.ts
 var workspace_merge_exports = {};
 __export(workspace_merge_exports, {
@@ -38165,9 +38351,9 @@ __export(questions_exports, {
   markQuestionApplied: () => markQuestionApplied,
   questionsContext: () => questionsContext
 });
-import { join as join19 } from "node:path";
+import { join as join20 } from "node:path";
 function questionsPath(projectPath) {
-  return join19(projectPath, AXME_CODE_DIR, QUESTIONS_FILE);
+  return join20(projectPath, AXME_CODE_DIR, QUESTIONS_FILE);
 }
 function nextId(existing) {
   const maxNum = existing.reduce((max, q) => {
@@ -38229,7 +38415,7 @@ function askQuestion(projectPath, input) {
   };
   const block = formatQuestion(q);
   const path = questionsPath(projectPath);
-  ensureDir(join19(projectPath, AXME_CODE_DIR));
+  ensureDir(join20(projectPath, AXME_CODE_DIR));
   const prev = readSafe(path);
   atomicWrite(path, prev ? prev.trimEnd() + "\n\n" + block : block);
   return q;
@@ -38309,7 +38495,7 @@ __export(backlog_exports, {
   updateBacklogItem: () => updateBacklogItem
 });
 import { readdirSync as readdirSync10, readFileSync as readFileSync13 } from "node:fs";
-import { join as join20 } from "node:path";
+import { join as join21 } from "node:path";
 function initBacklogStore(projectPath) {
   ensureDir(backlogDir(projectPath));
 }
@@ -38351,7 +38537,7 @@ function listBacklogItems(projectPath, status) {
   const dir = backlogDir(projectPath);
   if (!pathExists(dir)) return [];
   const files = readdirSync10(dir).filter((f) => f.startsWith("B-") && f.endsWith(".md")).sort();
-  const items = files.map((f) => parseBacklogFile(readFileSync13(join20(dir, f), "utf-8"))).filter(Boolean);
+  const items = files.map((f) => parseBacklogFile(readFileSync13(join21(dir, f), "utf-8"))).filter(Boolean);
   if (status) return items.filter((i) => i.status === status);
   return items;
 }
@@ -38364,7 +38550,7 @@ function backlogExists(projectPath) {
   return pathExists(backlogDir(projectPath));
 }
 function backlogDir(projectPath) {
-  return join20(projectPath, AXME_CODE_DIR, BACKLOG_DIR);
+  return join21(projectPath, AXME_CODE_DIR, BACKLOG_DIR);
 }
 function backlogContext(projectPath) {
   const items = listBacklogItems(projectPath);
@@ -38399,7 +38585,7 @@ function showBacklog(projectPath, status) {
   }).join("\n");
 }
 function itemPath(projectPath, id, slug) {
-  return join20(backlogDir(projectPath), `${id}-${slug}.md`);
+  return join21(backlogDir(projectPath), `${id}-${slug}.md`);
 }
 function toBacklogSlug(text) {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50);
@@ -38468,14 +38654,14 @@ var init_backlog = __esm({
 });
 
 // src/tools/context.ts
-import { join as join21 } from "node:path";
-import { existsSync as existsSync9 } from "node:fs";
+import { join as join22 } from "node:path";
+import { existsSync as existsSync10 } from "node:fs";
 function buildStorageRootHeader(projectPath, workspacePath) {
   const ws = detectWorkspace(projectPath);
-  const hasGit = existsSync9(join21(projectPath, ".git"));
+  const hasGit = existsSync10(join22(projectPath, ".git"));
   const isWorkspace2 = hasGit ? false : ws.type !== "single" || workspacePath != null && workspacePath !== projectPath;
   const sessionType = isWorkspace2 ? "workspace (multi-repo)" : "single-repo";
-  const storageRoot = join21(projectPath, AXME_CODE_DIR);
+  const storageRoot = join22(projectPath, AXME_CODE_DIR);
   const lines = [
     "# AXME Storage Root",
     "",
@@ -38495,10 +38681,10 @@ function buildStorageRootHeader(projectPath, workspacePath) {
 function getFullContextSections(projectPath, workspacePath) {
   const parts = [];
   parts.push(buildStorageRootHeader(projectPath, workspacePath));
-  const storageDirExists = pathExists(join21(projectPath, AXME_CODE_DIR));
+  const storageDirExists = pathExists(join22(projectPath, AXME_CODE_DIR));
   const hasConfig = configExists(projectPath);
   if (!storageDirExists || !hasConfig) {
-    const setupLock = join21(projectPath, AXME_CODE_DIR, "setup.lock");
+    const setupLock = join22(projectPath, AXME_CODE_DIR, "setup.lock");
     if (pathExists(setupLock)) {
       return [parts[0] + "\n\nSetup is already running. Wait for it to finish, then call axme_context again."];
     }
@@ -38519,7 +38705,7 @@ function getFullContextSections(projectPath, workspacePath) {
   }
   const handoff = handoffContext(workspacePath ?? projectPath);
   if (handoff) parts.push(handoff);
-  const worklogPath2 = join21(workspacePath ?? projectPath, AXME_CODE_DIR, "worklog.md");
+  const worklogPath2 = join22(workspacePath ?? projectPath, AXME_CODE_DIR, "worklog.md");
   const worklogContent = readSafe(worklogPath2);
   if (worklogContent.length > 20) {
     const entries = worklogContent.split(/(?=^## )/m).filter((e) => e.trim());
@@ -38571,17 +38757,115 @@ function getFullContextSections(projectPath, workspacePath) {
     ];
     parts.push(lines.join("\n"));
   }
-  parts.push([
-    "## Load Full Knowledge Base",
-    "",
-    "Call these three tools **in parallel** now to load the complete knowledge base:",
-    "1. `axme_oracle` - project stack, structure, patterns, glossary",
-    "2. `axme_decisions` - architectural decisions with enforce levels",
-    "3. `axme_memories` - feedback and validated patterns",
-    "",
-    "**IMPORTANT**: if any tool output is truncated or saved to a file, use the Read tool to read the full file content into your context. Do not proceed with partial data."
-  ].join("\n"));
+  const config2 = readConfig(projectPath);
+  const totalKbSize = listMemoriesMerged(projectPath, workspacePath).length + listDecisionsMerged(projectPath, workspacePath).length;
+  if (config2.contextMode === "search") {
+    parts.push(buildSearchModeCatalog(projectPath, workspacePath));
+    parts.push(buildSearchModeInstructions(isRuntimeInstalled()));
+  } else {
+    parts.push([
+      "## Load Full Knowledge Base",
+      "",
+      "Call these three tools **in parallel** now to load the complete knowledge base:",
+      "1. `axme_oracle` - project stack, structure, patterns, glossary",
+      "2. `axme_decisions` - architectural decisions with enforce levels",
+      "3. `axme_memories` - feedback and validated patterns",
+      "",
+      "**IMPORTANT**: if any tool output is truncated or saved to a file, use the Read tool to read the full file content into your context. Do not proceed with partial data."
+    ].join("\n"));
+    if (totalKbSize > 100) {
+      parts.push([
+        "## \u26A0\uFE0F Knowledge base size \u2014 action required",
+        "",
+        `This project has **${totalKbSize} KB entries** (memories + decisions). Loading every body at`,
+        "session start is wasteful at this size \u2014 both in tokens and in your time waiting for the",
+        "context to load.",
+        "",
+        "**MUST** tell the user, in your first response:",
+        "",
+        `> Your AXME knowledge base has ${totalKbSize} entries. Search mode would cut session-start`,
+        "> tokens by ~10x \u2014 the agent gets a catalog (titles + 1-line summaries) at start and fetches",
+        "> full bodies on demand via axme_search_kb / axme_get_memory / axme_get_decision.",
+        "> ",
+        "> Switching is opt-in. The CLI command is:",
+        "> ",
+        "> ```bash",
+        "> axme-code config set context.mode search",
+        "> ```",
+        "> ",
+        "> It installs ~100 MB of local embedding runtime (transformers.js + MiniLM model \u2014 runs on",
+        "> your CPU, no API calls, no token cost). On install failure the config rolls back to full",
+        "> automatically. Revert any time with `axme-code config set context.mode full`.",
+        "> ",
+        "> Want me to run the command for you now, or will you run it yourself in your terminal?",
+        "",
+        "Then **WAIT** for the user's decision before continuing with the original task:",
+        "",
+        '- If the user says "run it" / "yes" / "go ahead" \u2192 execute the command via Bash and proceed.',
+        `- If the user says "I'll do it" / "later" / "skip" \u2192 do NOT run it; continue the task in full mode.`,
+        "- If the user is silent or asks an unrelated question \u2192 continue in full mode; do not nag again",
+        "  this session.",
+        "",
+        "Do NOT switch the mode without explicit user confirmation. Do NOT nag again in the same",
+        "session if the user declines or moves on."
+      ].join("\n"));
+    }
+  }
   return parts;
+}
+function listMemoriesMerged(projectPath, workspacePath) {
+  return workspacePath && workspacePath !== projectPath ? mergeMemories(listMemories(workspacePath), listMemories(projectPath)) : listMemories(projectPath);
+}
+function listDecisionsMerged(projectPath, workspacePath) {
+  return workspacePath && workspacePath !== projectPath ? mergeDecisions(listDecisions(workspacePath), listDecisions(projectPath)) : listDecisions(projectPath);
+}
+function buildSearchModeCatalog(projectPath, workspacePath) {
+  const memories = listMemoriesMerged(projectPath, workspacePath);
+  const decisions = listDecisionsMerged(projectPath, workspacePath);
+  const lines = [
+    "## Knowledge Base Catalog (search mode)",
+    "",
+    `${decisions.length} decision(s), ${memories.length} memory(ies). Bodies are NOT loaded.`,
+    ""
+  ];
+  if (decisions.length > 0) {
+    lines.push("### Decisions");
+    lines.push("");
+    for (const d of decisions) {
+      const enforce = d.enforce ?? "info";
+      const desc = d.decision ? d.decision.replace(/\s+/g, " ").slice(0, 200) : "";
+      lines.push(`- [${enforce}] **${d.id}** \u2014 ${d.title}${desc ? ` \u2014 ${desc}` : ""}`);
+    }
+    lines.push("");
+  }
+  if (memories.length > 0) {
+    lines.push("### Memories");
+    lines.push("");
+    for (const m of memories) {
+      const desc = m.description ? m.description.replace(/\s+/g, " ").slice(0, 200) : "";
+      lines.push(`- [${m.type}] **${m.slug}** \u2014 ${m.title}${desc ? ` \u2014 ${desc}` : ""}`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+function buildSearchModeInstructions(runtimeInstalled) {
+  const searchAvailable = runtimeInstalled ? "- `axme_search_kb(query, type?, k?)` \u2014 semantic search across both" : "- `axme_search_kb(query, ...)` \u2014 currently UNAVAILABLE (transformers runtime not installed; falls back to a hint message)";
+  return [
+    "## Search mode active \u2014 bodies fetched on demand",
+    "",
+    "You have a catalog of every memory and decision above (titles + descriptions only).",
+    "Bodies are NOT loaded. Token cost at session start is ~10x lower than full mode.",
+    "",
+    "**MUST**: scan the catalog before generating code. If a title is relevant to your task,",
+    "fetch the full body **before** writing.",
+    "",
+    "- `axme_get_memory(slug)` \u2014 full body of one memory",
+    "- `axme_get_decision(id_or_slug)` \u2014 full body of one decision",
+    searchAvailable,
+    "",
+    runtimeInstalled ? 'Use `axme_search_kb` for fuzzy lookups ("how did we handle X?"). Use `axme_get_*` when you already know the slug from the catalog.' : "Without the runtime, navigate the catalog above by topic and fetch bodies via `axme_get_*`. To enable semantic search: `axme-code config set context.mode search` (re-runs install)."
+  ].join("\n");
 }
 var init_context = __esm({
   "src/tools/context.ts"() {
@@ -38590,6 +38874,7 @@ var init_context = __esm({
     init_decisions();
     init_engine();
     init_config();
+    init_embeddings();
     init_types();
     init_safety();
     init_memory();
@@ -38850,14 +39135,121 @@ var init_safety_tools = __esm({
   }
 });
 
+// src/tools/kb-search.ts
+function formatMemory(m) {
+  const lines = [
+    `# ${m.title}`,
+    "",
+    `- **type**: ${m.type}`,
+    `- **slug**: ${m.slug}`,
+    `- **date**: ${m.date}`,
+    `- **source**: ${m.source}`,
+    ...m.scope ? [`- **scope**: ${m.scope.join(", ")}`] : [],
+    ...m.keywords && m.keywords.length ? [`- **keywords**: ${m.keywords.join(", ")}`] : [],
+    "",
+    "## Description",
+    "",
+    m.description
+  ];
+  if (m.body) {
+    lines.push("", "## Body", "", m.body);
+  }
+  return lines.join("\n");
+}
+function formatDecision(d) {
+  const lines = [
+    `# ${d.id}: ${d.title}`,
+    "",
+    `- **enforce**: ${d.enforce ?? "-"}`,
+    `- **status**: ${d.status ?? "active"}`,
+    `- **date**: ${d.date}`,
+    `- **source**: ${d.source}`,
+    ...d.scope ? [`- **scope**: ${d.scope.join(", ")}`] : [],
+    "",
+    "## Decision",
+    "",
+    d.decision
+  ];
+  if (d.reasoning) {
+    lines.push("", "## Reasoning", "", d.reasoning);
+  }
+  return lines.join("\n");
+}
+function getMemoryTool(projectPath, slug) {
+  const m = getMemory(projectPath, slug);
+  if (!m) {
+    return `Memory not found: '${slug}'. Use axme_memories to list available slugs, or axme_search_kb to find by topic.`;
+  }
+  return formatMemory(m);
+}
+function getDecisionTool(projectPath, idOrSlug) {
+  const d = getDecision(projectPath, idOrSlug);
+  if (!d) {
+    return `Decision not found: '${idOrSlug}'. Use axme_decisions to list, or axme_search_kb to find by topic.`;
+  }
+  return formatDecision(d);
+}
+async function searchKbTool(projectPath, input) {
+  const k = Math.max(1, Math.min(input.k ?? 5, 50));
+  const embedder = await loadEmbedder();
+  if (!embedder) {
+    return [
+      "Semantic search runtime is not installed.",
+      "",
+      "To enable: `axme-code config set context.mode search`",
+      "(installs ~100MB transformers.js + ~30MB MiniLM model, one-time).",
+      "",
+      "In the meantime, list all entries with axme_memories / axme_decisions",
+      "and use axme_get_memory(slug) / axme_get_decision(id) for full bodies."
+    ].join("\n");
+  }
+  const records = loadEmbeddings(projectPath);
+  if (records.length === 0) {
+    const memCount = listMemories(projectPath).length;
+    const decCount = listDecisions(projectPath).length;
+    if (memCount + decCount === 0) {
+      return "Knowledge base is empty \u2014 no memories or decisions to search.";
+    }
+    return [
+      `Embeddings index is empty (${memCount} memories, ${decCount} decisions on disk).`,
+      "Run `axme-code reindex` to build the index, then retry the search."
+    ].join("\n");
+  }
+  const qvec = await embedder.embed(input.query);
+  const hits = topK(records, qvec, k, input.type);
+  if (hits.length === 0) {
+    return `No matches in ${records.length} indexed entries for query: "${input.query}".`;
+  }
+  const lines = [
+    `Top ${hits.length} matches (of ${records.length} indexed):`,
+    ""
+  ];
+  for (const h of hits) {
+    const score = h.score.toFixed(3);
+    const tag = h.type === "memory" ? "memory" : "decision";
+    lines.push(`- [${tag}] **${h.slug}** (score ${score}) \u2014 ${h.title}`);
+    if (h.description) lines.push(`  ${h.description}`);
+  }
+  lines.push("", "Fetch a full body via axme_get_memory(slug) or axme_get_decision(id_or_slug).");
+  return lines.join("\n");
+}
+var init_kb_search = __esm({
+  "src/tools/kb-search.ts"() {
+    "use strict";
+    init_memory();
+    init_decisions();
+    init_embeddings();
+  }
+});
+
 // src/audit-spawner.ts
 import { spawn } from "node:child_process";
 import { openSync as openSync3, closeSync as closeSync3 } from "node:fs";
-import { join as join22 } from "node:path";
+import { join as join23 } from "node:path";
 function spawnDetachedAuditWorker(workspacePath, sessionId) {
-  const logsDir = join22(workspacePath, AXME_CODE_DIR, AUDIT_WORKER_LOGS_DIR);
+  const logsDir = join23(workspacePath, AXME_CODE_DIR, AUDIT_WORKER_LOGS_DIR);
   ensureDir(logsDir);
-  const logPath = join22(logsDir, `${sessionId}.log`);
+  const logPath = join23(logsDir, `${sessionId}.log`);
   const fd = openSync3(logPath, "a");
   try {
     const cliPath = process.argv[1];
@@ -38894,8 +39286,8 @@ var init_audit_spawner = __esm({
 });
 
 // src/auto-update.ts
-import { homedir as homedir6 } from "node:os";
-import { join as join23, resolve as resolve6, basename as basename2 } from "node:path";
+import { homedir as homedir7 } from "node:os";
+import { join as join24, resolve as resolve6, basename as basename6 } from "node:path";
 import {
   readFileSync as readFileSync14,
   writeFileSync as writeFileSync4,
@@ -38925,7 +39317,7 @@ function getBinaryPath() {
   const arg1 = process.argv[1];
   if (!arg1) return null;
   const resolved = resolve6(arg1);
-  const name = basename2(resolved);
+  const name = basename6(resolved);
   if (name === "axme-code" && !resolved.endsWith(".js") && !resolved.endsWith(".ts")) {
     return resolved;
   }
@@ -39059,16 +39451,16 @@ var init_auto_update = __esm({
     CHECK_INTERVAL_MS = 24 * 60 * 60 * 1e3;
     API_TIMEOUT_MS = 5e3;
     DOWNLOAD_TIMEOUT_MS = 6e4;
-    CONFIG_DIR = join23(homedir6(), ".config", "axme-code");
-    CACHE_FILE = join23(CONFIG_DIR, "update_check.json");
+    CONFIG_DIR = join24(homedir7(), ".config", "axme-code");
+    CACHE_FILE = join24(CONFIG_DIR, "update_check.json");
     updateNotification = null;
   }
 });
 
 // src/server.ts
 var server_exports = {};
-import { join as join24 } from "node:path";
-import { existsSync as existsSync11 } from "node:fs";
+import { join as join25 } from "node:path";
+import { existsSync as existsSync12 } from "node:fs";
 function getOwnedSessionIdForLogging() {
   const all = listClaudeSessionMappings(defaultProjectPath);
   const owned = all.filter((m) => m.ownerPpid === OWN_PPID);
@@ -39179,7 +39571,7 @@ function ppWithScope(project_path, scope) {
     const repoScope = scope.find((s) => s !== "all");
     if (repoScope) {
       const match = serverWorkspace.projects.find((p) => p.name === repoScope);
-      if (match) return join24(defaultProjectPath, match.path);
+      if (match) return join25(defaultProjectPath, match.path);
     }
   }
   return defaultProjectPath;
@@ -39250,6 +39642,9 @@ var init_server3 = __esm({
     init_decision_tools();
     init_safety_tools();
     init_status();
+    init_kb_search();
+    init_embeddings();
+    init_config();
     init_workspace_detector();
     init_sessions();
     init_worklog();
@@ -39257,7 +39652,7 @@ var init_server3 = __esm({
     init_auto_update();
     init_telemetry();
     serverCwd = process.cwd();
-    serverHasGit = existsSync11(join24(serverCwd, ".git"));
+    serverHasGit = existsSync12(join25(serverCwd, ".git"));
     serverWorkspace = detectWorkspace(serverCwd);
     isWorkspace = serverHasGit ? false : serverWorkspace.type !== "single";
     defaultProjectPath = serverCwd;
@@ -39409,6 +39804,7 @@ var init_server3 = __esm({
         const sid = getOwnedSessionIdForLogging();
         const resolved = ppWithScope(project_path, scope);
         const result = saveMemoryTool(resolved, { type: type2, title, description, body, keywords, scope }, sid);
+        await embedKbEntry(resolved, result.slug, "memory", title, description, readConfig(resolved).contextMode);
         return { content: [{ type: "text", text: `Memory saved: ${result.slug} (${type2}) -> ${resolved}` }] };
       }
     );
@@ -39426,6 +39822,7 @@ var init_server3 = __esm({
       async ({ project_path, title, decision, reasoning, enforce, scope }) => {
         const resolved = ppWithScope(project_path, scope);
         const result = saveDecisionTool(resolved, { title, decision, reasoning, enforce, scope });
+        await embedKbEntry(resolved, result.id, "decision", title, decision, readConfig(resolved).contextMode);
         return { content: [{ type: "text", text: `Decision saved: ${result.id} - ${title} -> ${resolved}` }] };
       }
     );
@@ -39451,6 +39848,42 @@ var init_server3 = __esm({
       },
       async ({ project_path }) => {
         return { content: [{ type: "text", text: showSafetyTool(pp(project_path)) }] };
+      }
+    );
+    server.tool(
+      "axme_get_memory",
+      "Fetch the full body of one memory by slug. Use after seeing the slug in axme_context (search mode catalog) or axme_search_kb results.",
+      {
+        project_path: external_exports3.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+        slug: external_exports3.string().describe("Memory slug, e.g. 'always-call-axme-context-first'")
+      },
+      async ({ project_path, slug }) => {
+        return { content: [{ type: "text", text: getMemoryTool(pp(project_path), slug) }] };
+      }
+    );
+    server.tool(
+      "axme_get_decision",
+      "Fetch the full body of one decision by ID (e.g. 'D-110') or slug. Use after seeing it in axme_context (search mode catalog) or axme_search_kb results.",
+      {
+        project_path: external_exports3.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+        id_or_slug: external_exports3.string().describe("Decision ID like 'D-110' or its slug")
+      },
+      async ({ project_path, id_or_slug }) => {
+        return { content: [{ type: "text", text: getDecisionTool(pp(project_path), id_or_slug) }] };
+      }
+    );
+    server.tool(
+      "axme_search_kb",
+      "Semantic search across memories and decisions. Useful for fuzzy lookups mid-session ('how did we handle X?'). Requires the embeddings runtime \u2014 install with `axme-code config set context.mode search`.",
+      {
+        project_path: external_exports3.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+        query: external_exports3.string().describe("Search query in natural language"),
+        k: external_exports3.number().int().min(1).max(50).optional().describe("Top K results to return (default 5, max 50)"),
+        type: external_exports3.enum(["memory", "decision"]).optional().describe("Filter results to one type. Omit to search both.")
+      },
+      async ({ project_path, query, k, type: type2 }) => {
+        const text = await searchKbTool(pp(project_path), { query, k, type: type2 });
+        return { content: [{ type: "text", text }] };
       }
     );
     server.tool(
@@ -39840,7 +40273,7 @@ ${lines.join("\n")}` }] };
           source: "agent"
         });
         const { appendFileSync: appendFileSync5 } = await import("node:fs");
-        const { join: join32 } = await import("node:path");
+        const { join: join33 } = await import("node:path");
         const { AXME_CODE_DIR: AXME_CODE_DIR2 } = await Promise.resolve().then(() => (init_types(), types_exports));
         const isoDate = (/* @__PURE__ */ new Date()).toISOString().slice(0, 16).replace("T", " ");
         const shortId = sid.slice(0, 8);
@@ -39850,7 +40283,7 @@ ${args2.worklog_entry}
 
 `;
         try {
-          appendFileSync5(join32(targetPath, AXME_CODE_DIR2, "worklog.md"), worklogEntry);
+          appendFileSync5(join33(targetPath, AXME_CODE_DIR2, "worklog.md"), worklogEntry);
         } catch {
         }
         const { loadSession: loadSession2, writeSession: writeSession2 } = await Promise.resolve().then(() => (init_sessions(), sessions_exports));
@@ -39907,8 +40340,8 @@ var pre_tool_use_exports = {};
 __export(pre_tool_use_exports, {
   runPreToolUseHook: () => runPreToolUseHook
 });
-import { dirname as dirname4, join as join25, resolve as resolve7 } from "node:path";
-import { existsSync as existsSync12 } from "node:fs";
+import { dirname as dirname5, join as join26, resolve as resolve7 } from "node:path";
+import { existsSync as existsSync13 } from "node:fs";
 function splitCommandSegments(command2) {
   const segments = [];
   let current = "";
@@ -39967,17 +40400,17 @@ function deny(reason) {
 function findContainingRepo(filePath, workspaceRoot) {
   let dir = resolve7(filePath);
   try {
-    const stat = existsSync12(dir);
+    const stat = existsSync13(dir);
     if (!stat) {
-      dir = dirname4(dir);
+      dir = dirname5(dir);
     }
   } catch {
-    dir = dirname4(dir);
+    dir = dirname5(dir);
   }
   const rootResolved = resolve7(workspaceRoot);
   while (dir.startsWith(rootResolved) && dir !== rootResolved) {
-    if (existsSync12(join25(dir, ".git"))) return dir;
-    const parent = dirname4(dir);
+    if (existsSync13(join26(dir, ".git"))) return dir;
+    const parent = dirname5(dir);
     if (parent === dir) break;
     dir = parent;
   }
@@ -39985,7 +40418,7 @@ function findContainingRepo(filePath, workspaceRoot) {
 }
 function handlePreToolUse(sessionOrigin, event) {
   const { tool_name, tool_input } = event;
-  if (!pathExists(join25(sessionOrigin, AXME_CODE_DIR))) return;
+  if (!pathExists(join26(sessionOrigin, AXME_CODE_DIR))) return;
   if (event.session_id && event.transcript_path) {
     ensureAxmeSessionForClaude(sessionOrigin, event.session_id, event.transcript_path, tool_name);
   }
@@ -40083,10 +40516,10 @@ var post_tool_use_exports = {};
 __export(post_tool_use_exports, {
   runPostToolUseHook: () => runPostToolUseHook
 });
-import { join as join26 } from "node:path";
+import { join as join27 } from "node:path";
 function handlePostToolUse(workspacePath, event) {
   const { tool_name, tool_input } = event;
-  if (!pathExists(join26(workspacePath, AXME_CODE_DIR))) return;
+  if (!pathExists(join27(workspacePath, AXME_CODE_DIR))) return;
   if (!event.session_id || !event.transcript_path) return;
   const axmeSessionId = ensureAxmeSessionForClaude(
     workspacePath,
@@ -40130,9 +40563,9 @@ var session_end_exports = {};
 __export(session_end_exports, {
   runSessionEndHook: () => runSessionEndHook
 });
-import { join as join27 } from "node:path";
+import { join as join28 } from "node:path";
 function handleSessionEnd(workspacePath, input) {
-  if (!pathExists(join27(workspacePath, AXME_CODE_DIR))) return;
+  if (!pathExists(join28(workspacePath, AXME_CODE_DIR))) return;
   if (!input.session_id) return;
   let axmeSessionId = readClaudeSessionMapping(workspacePath, input.session_id);
   if (!axmeSessionId && input.transcript_path) {
@@ -40178,7 +40611,7 @@ var init_session_end = __esm({
 });
 
 // src/transcript-parser.ts
-import { readFileSync as readFileSync15, existsSync as existsSync13 } from "node:fs";
+import { readFileSync as readFileSync15, existsSync as existsSync14 } from "node:fs";
 function shortenToolInput(name, input) {
   if (!input || typeof input !== "object") return "";
   switch (name) {
@@ -40215,7 +40648,7 @@ function shortenToolInput(name, input) {
   }
 }
 function parseTranscriptFromOffset(path, startOffset = 0) {
-  if (!existsSync13(path)) {
+  if (!existsSync14(path)) {
     return { turns: [], endOffset: startOffset, bytesRead: 0, fileSize: 0, bashCommands: [] };
   }
   let buffer;
@@ -40501,10 +40934,10 @@ __export(session_auditor_exports, {
   parseAuditOutput: () => parseAuditOutput,
   runSessionAudit: () => runSessionAudit
 });
-import { basename as basename3 } from "node:path";
+import { basename as basename7 } from "node:path";
 function buildExistingContext(sessionOrigin, workspaceInfo) {
   const paths = [
-    { label: workspaceInfo && workspaceInfo.root === sessionOrigin ? "workspace" : basename3(sessionOrigin), path: sessionOrigin }
+    { label: workspaceInfo && workspaceInfo.root === sessionOrigin ? "workspace" : basename7(sessionOrigin), path: sessionOrigin }
   ];
   if (workspaceInfo && workspaceInfo.type !== "single") {
     const seen = /* @__PURE__ */ new Set([sessionOrigin]);
@@ -40537,7 +40970,7 @@ function buildWorkspaceContext(sessionOrigin, filesChanged, workspaceInfo) {
   if (!workspaceInfo || workspaceInfo.type === "single") {
     lines.push(`- Session origin: ${sessionOrigin}`);
     lines.push(`- Type: single-repo session (not a workspace)`);
-    lines.push(`- Scope choices available: "${basename3(sessionOrigin)}" or "all"`);
+    lines.push(`- Scope choices available: "${basename7(sessionOrigin)}" or "all"`);
     lines.push("");
     lines.push('Because this is a single repo, use "all" for universal rules, or the repo name for repo-specific rules.');
     return lines.join("\n");
@@ -40669,7 +41102,7 @@ ${opts.sessionEvents}
 }
 async function runSingleAuditCall(opts) {
   const sdk = await import("@anthropic-ai/claude-agent-sdk");
-  const claudePath = findClaudePath();
+  const claudePath = claudePathForSdk();
   const queryOpts = {
     cwd: opts.sessionOrigin,
     model: opts.model,
@@ -40875,7 +41308,7 @@ JSON SCHEMA:
 
 ANALYSIS TO FORMAT:
 ${freeTextAnalysis}`;
-  const claudePath = findClaudePath();
+  const claudePath = claudePathForSdk();
   const queryOpts = {
     cwd: sessionOrigin,
     model,
@@ -41406,15 +41839,15 @@ __export(kb_audit_exports, {
   resetKbAuditCounter: () => resetKbAuditCounter,
   writeKbAuditReport: () => writeKbAuditReport
 });
-import { join as join28 } from "node:path";
+import { join as join29 } from "node:path";
 function counterPath(projectPath) {
-  return join28(projectPath, AXME_CODE_DIR, KB_AUDIT_DIR, COUNTER_FILE);
+  return join29(projectPath, AXME_CODE_DIR, KB_AUDIT_DIR, COUNTER_FILE);
 }
 function reportsDir(projectPath) {
-  return join28(projectPath, AXME_CODE_DIR, KB_AUDIT_DIR);
+  return join29(projectPath, AXME_CODE_DIR, KB_AUDIT_DIR);
 }
 function incrementKbAuditCounter(projectPath) {
-  const dir = join28(projectPath, AXME_CODE_DIR, KB_AUDIT_DIR);
+  const dir = join29(projectPath, AXME_CODE_DIR, KB_AUDIT_DIR);
   ensureDir(dir);
   const existing = readJson(counterPath(projectPath));
   const counter = existing ?? {
@@ -41429,7 +41862,7 @@ function incrementKbAuditCounter(projectPath) {
   return { count: counter.count, recommendAudit };
 }
 function resetKbAuditCounter(projectPath) {
-  const dir = join28(projectPath, AXME_CODE_DIR, KB_AUDIT_DIR);
+  const dir = join29(projectPath, AXME_CODE_DIR, KB_AUDIT_DIR);
   ensureDir(dir);
   const counter = {
     count: 0,
@@ -41445,7 +41878,7 @@ function writeKbAuditReport(projectPath, report) {
   const dir = reportsDir(projectPath);
   ensureDir(dir);
   const date5 = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const path = join28(dir, `${date5}-report.md`);
+  const path = join29(dir, `${date5}-report.md`);
   atomicWrite(path, report);
   return path;
 }
@@ -41475,7 +41908,7 @@ var session_cleanup_exports = {};
 __export(session_cleanup_exports, {
   runSessionCleanup: () => runSessionCleanup
 });
-import { join as join29 } from "node:path";
+import { join as join30 } from "node:path";
 import { appendFileSync as appendFileSync3 } from "node:fs";
 function resolveScopeRoutes(scope, workspacePath, workspaceRoot) {
   const isAll = !scope || scope.length === 0 || scope.length === 1 && scope[0] === "all";
@@ -41484,8 +41917,8 @@ function resolveScopeRoutes(scope, workspacePath, workspaceRoot) {
   const repos = [];
   for (const s of scope) {
     if (s === "all") continue;
-    const abs = join29(workspaceRoot, s);
-    if (pathExists(join29(abs, ".axme-code")) || pathExists(join29(abs, ".git"))) {
+    const abs = join30(workspaceRoot, s);
+    if (pathExists(join30(abs, ".axme-code")) || pathExists(join30(abs, ".git"))) {
       repos.push(abs);
     }
   }
@@ -41554,7 +41987,7 @@ async function runSessionCleanup(workspacePath, sessionId) {
     oracleRescanned: false,
     costUsd: 0
   };
-  if (!pathExists(join29(workspacePath, AXME_CODE_DIR))) {
+  if (!pathExists(join30(workspacePath, AXME_CODE_DIR))) {
     return { ...base, skipped: "no-storage" };
   }
   const session = loadSession(workspacePath, sessionId);
@@ -41860,7 +42293,7 @@ async function runSessionCleanup(workspacePath, sessionId) {
 ${audit.sessionSummary}
 
 `;
-          appendFileSync3(join29(workspacePath, AXME_CODE_DIR, "worklog.md"), entry);
+          appendFileSync3(join30(workspacePath, AXME_CODE_DIR, "worklog.md"), entry);
           result.worklogSummary = true;
         } catch {
         }
@@ -42080,7 +42513,7 @@ __export(cleanup_exports, {
   normalizeDecisions: () => normalizeDecisions
 });
 import { readdirSync as readdirSync11, readFileSync as readFileSync16, writeFileSync as writeFileSync5, mkdirSync as mkdirSync4, copyFileSync, rmSync as rmSync2 } from "node:fs";
-import { join as join30 } from "node:path";
+import { join as join31, basename as basename8 } from "node:path";
 function cleanupLegacyArtifacts(projectPath, opts) {
   const log = opts.onProgress ?? (() => {
   });
@@ -42090,53 +42523,53 @@ function cleanupLegacyArtifacts(projectPath, opts) {
     legacyDirsRemoved: [],
     backupPath: null
   };
-  const acDir = join30(projectPath, AXME_CODE_DIR);
+  const acDir = join31(projectPath, AXME_CODE_DIR);
   if (!pathExists(acDir)) {
     log("No .axme-code/ found, nothing to clean.");
     return result;
   }
-  const backupDir = join30(acDir, "backups", `legacy-${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19)}`);
+  const backupDir = join31(acDir, "backups", `legacy-${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19)}`);
   if (!opts.dryRun) {
     mkdirSync4(backupDir, { recursive: true });
     result.backupPath = backupDir;
   }
-  const sessionsDir = join30(acDir, "sessions");
+  const sessionsDir = join31(acDir, "sessions");
   if (pathExists(sessionsDir)) {
     for (const entry of readdirSync11(sessionsDir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
-      const metaPath = join30(sessionsDir, entry.name, "meta.json");
+      const metaPath = join31(sessionsDir, entry.name, "meta.json");
       const session = readJson(metaPath);
       if (!session) continue;
       if (session.origin) continue;
       if (opts.dryRun) {
         log(`  [dry-run] would delete session ${entry.name} (no origin field)`);
       } else {
-        const backupSessionDir = join30(backupDir, "sessions", entry.name);
+        const backupSessionDir = join31(backupDir, "sessions", entry.name);
         mkdirSync4(backupSessionDir, { recursive: true });
         try {
-          copyFileSync(metaPath, join30(backupSessionDir, "meta.json"));
+          copyFileSync(metaPath, join31(backupSessionDir, "meta.json"));
         } catch {
         }
-        rmSync2(join30(sessionsDir, entry.name), { recursive: true, force: true });
+        rmSync2(join31(sessionsDir, entry.name), { recursive: true, force: true });
         log(`  deleted session ${entry.name} (no origin)`);
       }
       result.sessionsDeleted++;
     }
   }
-  const auditLogsDir2 = join30(acDir, "audit-logs");
+  const auditLogsDir2 = join31(acDir, "audit-logs");
   if (pathExists(auditLogsDir2)) {
     for (const file2 of readdirSync11(auditLogsDir2).filter((f) => f.endsWith(".json"))) {
-      const logPath = join30(auditLogsDir2, file2);
+      const logPath = join31(auditLogsDir2, file2);
       const auditLog = readJson(logPath);
       if (!auditLog) continue;
       if (auditLog.resume) continue;
       if (opts.dryRun) {
         log(`  [dry-run] would delete audit log ${file2} (no resume field)`);
       } else {
-        const backupLogsDir = join30(backupDir, "audit-logs");
+        const backupLogsDir = join31(backupDir, "audit-logs");
         mkdirSync4(backupLogsDir, { recursive: true });
         try {
-          copyFileSync(logPath, join30(backupLogsDir, file2));
+          copyFileSync(logPath, join31(backupLogsDir, file2));
         } catch {
         }
         removeFile(logPath);
@@ -42146,12 +42579,12 @@ function cleanupLegacyArtifacts(projectPath, opts) {
     }
   }
   const legacyPaths = [
-    join30(acDir, "pending-audits"),
-    join30(acDir, "active-session")
+    join31(acDir, "pending-audits"),
+    join31(acDir, "active-session")
   ];
   for (const p of legacyPaths) {
     if (!pathExists(p)) continue;
-    const name = p.split("/").pop() ?? p;
+    const name = basename8(p) ?? p;
     if (opts.dryRun) {
       log(`  [dry-run] would remove legacy ${name}`);
     } else {
@@ -42169,12 +42602,12 @@ function normalizeDecisions(workspacePath, opts) {
   let filesSkipped = 0;
   let locations = 0;
   const targets = [];
-  const wsDecDir = join30(workspacePath, AXME_CODE_DIR, "decisions");
+  const wsDecDir = join31(workspacePath, AXME_CODE_DIR, "decisions");
   if (pathExists(wsDecDir)) targets.push(wsDecDir);
   try {
     for (const entry of readdirSync11(workspacePath, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-      const repoDecDir = join30(workspacePath, entry.name, AXME_CODE_DIR, "decisions");
+      const repoDecDir = join31(workspacePath, entry.name, AXME_CODE_DIR, "decisions");
       if (pathExists(repoDecDir)) targets.push(repoDecDir);
     }
   } catch {
@@ -42185,7 +42618,7 @@ function normalizeDecisions(workspacePath, opts) {
     let updated = 0;
     try {
       for (const file2 of readdirSync11(decDir).filter((f) => f.startsWith("D-") && f.endsWith(".md"))) {
-        const filePath = join30(decDir, file2);
+        const filePath = join31(decDir, file2);
         const content = readFileSync16(filePath, "utf-8");
         if (/^status:\s/m.test(content)) {
           filesSkipped++;
@@ -42393,10 +42826,119 @@ Report summary: which repos had changes, how many decisions superseded/revoked/c
   }
 });
 
+// src/tools/search-install.ts
+var search_install_exports = {};
+__export(search_install_exports, {
+  reindexAll: () => reindexAll,
+  runConfigSetSearch: () => runConfigSetSearch
+});
+import { spawnSync } from "node:child_process";
+import { mkdirSync as mkdirSync5, existsSync as existsSync15, writeFileSync as writeFileSync6 } from "node:fs";
+function installTransformers() {
+  const dir = runtimeDir();
+  if (!existsSync15(dir)) mkdirSync5(dir, { recursive: true });
+  const pkgJson = `${dir}/package.json`;
+  if (!existsSync15(pkgJson)) {
+    writeFileSync6(pkgJson, JSON.stringify({ name: "axme-code-runtime", private: true, version: "0.0.0" }, null, 2) + "\n");
+  }
+  process.stderr.write(`AXME: installing semantic-search runtime into ${dir} (one-time, ~100 MB)...
+`);
+  const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
+  const result = spawnSync(npmCmd, [
+    "install",
+    "--prefix",
+    dir,
+    "--no-audit",
+    "--no-fund",
+    `@huggingface/transformers@${TRANSFORMERS_VERSION}`
+  ], { stdio: ["ignore", "inherit", "inherit"], shell: process.platform === "win32" });
+  if (result.error) return { ok: false, error: `npm spawn failed: ${result.error.message}` };
+  if (result.status !== 0) return { ok: false, error: `npm install exited with code ${result.status}` };
+  _resetEmbedderCache();
+  return { ok: true };
+}
+function entryText(title, body) {
+  return `${title}. ${body}`;
+}
+async function reindexAll(projectPath) {
+  if (!isRuntimeInstalled()) {
+    return {
+      ok: false,
+      error: "Embeddings runtime not installed. Run `axme-code config set context.mode search` first."
+    };
+  }
+  const embedder = await loadEmbedder();
+  if (!embedder) {
+    return { ok: false, error: "Failed to load embedder (runtime present but module did not load)." };
+  }
+  const memories = listMemories(projectPath);
+  const decisions = listDecisions(projectPath);
+  const total = memories.length + decisions.length;
+  if (total === 0) {
+    await saveEmbeddings(projectPath, []);
+    return { ok: true, indexed: 0 };
+  }
+  const records = [];
+  let processed = 0;
+  const tickEvery = Math.max(1, Math.floor(total / 20));
+  const now = Date.now();
+  for (const m of memories) {
+    const vec = await embedder.embed(entryText(m.title, m.description));
+    records.push({
+      slug: m.slug,
+      type: "memory",
+      title: m.title,
+      description: m.description,
+      mtime: now,
+      embedding: Array.from(vec)
+    });
+    processed++;
+    if (processed % tickEvery === 0) {
+      process.stderr.write(`  embedded ${processed}/${total}\r`);
+    }
+  }
+  for (const d of decisions) {
+    const vec = await embedder.embed(entryText(d.title, d.decision));
+    records.push({
+      slug: d.id,
+      type: "decision",
+      title: d.title,
+      description: d.decision,
+      mtime: now,
+      embedding: Array.from(vec)
+    });
+    processed++;
+    if (processed % tickEvery === 0) {
+      process.stderr.write(`  embedded ${processed}/${total}\r`);
+    }
+  }
+  process.stderr.write(`  embedded ${processed}/${total}
+`);
+  await saveEmbeddings(projectPath, records);
+  return { ok: true, indexed: records.length };
+}
+async function runConfigSetSearch(projectPath) {
+  if (!isRuntimeInstalled()) {
+    const installed = installTransformers();
+    if (!installed.ok) return { ok: false, error: installed.error };
+  }
+  return reindexAll(projectPath);
+}
+var TRANSFORMERS_VERSION;
+var init_search_install = __esm({
+  "src/tools/search-install.ts"() {
+    "use strict";
+    init_memory();
+    init_decisions();
+    init_embeddings();
+    TRANSFORMERS_VERSION = "^4.0.1";
+  }
+});
+
 // src/cli.ts
 init_js_yaml();
-import { resolve as resolve8, join as join31 } from "node:path";
-import { writeFileSync as writeFileSync6, existsSync as existsSync14, readFileSync as readFileSync17, appendFileSync as appendFileSync4, mkdirSync as mkdirSync5 } from "node:fs";
+import { resolve as resolve8, join as join32, basename as basename9 } from "node:path";
+import { writeFileSync as writeFileSync7, existsSync as existsSync16, readFileSync as readFileSync17, appendFileSync as appendFileSync4, mkdirSync as mkdirSync6 } from "node:fs";
 
 // src/tools/init.ts
 init_engine();
@@ -42406,7 +42948,7 @@ init_memory();
 init_safety();
 init_config();
 init_sessions();
-import { join as join16 } from "node:path";
+import { join as join16, basename as basename5 } from "node:path";
 import { existsSync as existsSync7 } from "node:fs";
 
 // src/storage/deploy.ts
@@ -42632,6 +43174,7 @@ function applyPresetSafetyRules(rules, bundleIds) {
 init_types();
 init_cost_extractor();
 init_engine();
+init_agent_options();
 init_js_yaml();
 async function initProjectWithLLM(projectPath, opts) {
   const startTime = Date.now();
@@ -42715,38 +43258,45 @@ async function initProjectWithLLM(projectPath, opts) {
   }
   const log = opts?.onProgress ?? (() => {
   });
-  const projectName = projectPath.split("/").pop();
-  log(`  [${projectName}] LLM scanning (oracle + decisions + safety + deploy)...`);
+  const projectName = basename5(projectPath);
   let oracleLlm = false;
   let oracleFiles = 0;
   let scanDecisionCount = 0;
   let safetyLlm = false;
   let safetySummary = "";
-  const scanners = await Promise.allSettled([
-    // Oracle scan
-    (async () => {
-      if (oracleExists(projectPath)) return { type: "oracle", skipped: true };
-      const { runOracleScan: runOracleScan2 } = await Promise.resolve().then(() => (init_oracle2(), oracle_exports));
-      return { type: "oracle", result: await runOracleScan2({ projectPath, workspaceMode: opts?.workspaceMode }) };
-    })(),
-    // Decision scan — pass existing decisions (from presets) so scanner skips same-topic
-    (async () => {
-      const { runDecisionScan: runDecisionScan2 } = await Promise.resolve().then(() => (init_decision(), decision_exports));
-      const existing = listDecisions(projectPath);
-      return { type: "decision", result: await runDecisionScan2({ projectPath, existingDecisions: existing }) };
-    })(),
-    // Safety scan
-    (async () => {
-      if (safetyExists(projectPath)) return { type: "safety", skipped: true };
-      const { runSafetyScan: runSafetyScan2 } = await Promise.resolve().then(() => (init_safety2(), safety_exports2));
-      return { type: "safety", result: await runSafetyScan2({ projectPath }) };
-    })(),
-    // Deploy scan
-    (async () => {
-      const { runDeployScan: runDeployScan2 } = await Promise.resolve().then(() => (init_deploy(), deploy_exports));
-      return { type: "deploy", result: await runDeployScan2({ projectPath }) };
-    })()
-  ]);
+  const claudePath = findClaudePath();
+  const scanners = claudePath ? await (async () => {
+    log(`  [${projectName}] LLM scanning (oracle + decisions + safety + deploy)...`);
+    return Promise.allSettled([
+      // Oracle scan
+      (async () => {
+        if (oracleExists(projectPath)) return { type: "oracle", skipped: true };
+        const { runOracleScan: runOracleScan2 } = await Promise.resolve().then(() => (init_oracle2(), oracle_exports));
+        return { type: "oracle", result: await runOracleScan2({ projectPath, workspaceMode: opts?.workspaceMode }) };
+      })(),
+      // Decision scan — pass existing decisions (from presets) so scanner skips same-topic
+      (async () => {
+        const { runDecisionScan: runDecisionScan2 } = await Promise.resolve().then(() => (init_decision(), decision_exports));
+        const existing = listDecisions(projectPath);
+        return { type: "decision", result: await runDecisionScan2({ projectPath, existingDecisions: existing }) };
+      })(),
+      // Safety scan
+      (async () => {
+        if (safetyExists(projectPath)) return { type: "safety", skipped: true };
+        const { runSafetyScan: runSafetyScan2 } = await Promise.resolve().then(() => (init_safety2(), safety_exports2));
+        return { type: "safety", result: await runSafetyScan2({ projectPath }) };
+      })(),
+      // Deploy scan
+      (async () => {
+        const { runDeployScan: runDeployScan2 } = await Promise.resolve().then(() => (init_deploy(), deploy_exports));
+        return { type: "deploy", result: await runDeployScan2({ projectPath }) };
+      })()
+    ]);
+  })() : [];
+  if (!claudePath) {
+    log(`  [${projectName}] Claude Code CLI not found on PATH \u2014 skipping LLM scanners (install with: npm install -g @anthropic-ai/claude-code)`);
+    errors.push("Claude Code CLI not installed \u2014 LLM scanners skipped, using deterministic fallback");
+  }
   log(`  [${projectName}] Scanners complete, processing results...`);
   let scannersRun = 0;
   let scannersFailed = 0;
@@ -42857,7 +43407,7 @@ async function initWorkspaceWithLLM(workspacePath, opts) {
     const ws = detectWorkspace2(workspacePath);
     if (ws.type !== "single") {
       const wsYaml = jsYaml.dump({
-        name: ws.root.split("/").pop(),
+        name: basename5(ws.root),
         type: ws.type,
         manifest: ws.manifestPath,
         projects: ws.projects
@@ -42890,7 +43440,7 @@ async function initWorkspaceWithLLM(workspacePath, opts) {
         completed++;
         if (settled.status === "fulfilled") {
           const r = settled.value;
-          const name = r.projectPath.split("/").pop();
+          const name = basename5(r.projectPath);
           if (r.durationMs === 0) {
             log(`  [${completed}/${gitRepos.length}] ${name}: skipped (already initialized)`);
           } else {
@@ -42986,6 +43536,10 @@ async function promptAuthChoice(options) {
 init_types();
 var args = process.argv.slice(2);
 var command = args[0];
+if (command === "--version" || command === "-v") {
+  console.log(AXME_CODE_VERSION);
+  process.exit(0);
+}
 var PENDING_AUDITS_GUIDANCE = `
 ### Pending Audits Check (MANDATORY at session start)
 When you call axme_context at session start, its output may contain a section
@@ -43070,32 +43624,28 @@ axme_context, axme_oracle, axme_decisions, axme_memories, axme_save_memory, axme
 axme_update_safety, axme_safety, axme_status, axme_worklog, axme_workspace
 `;
 function generateClaudeMd(projectPath, isWorkspace2) {
-  const claudeMdPath = join31(projectPath, "CLAUDE.md");
+  const claudeMdPath = join32(projectPath, "CLAUDE.md");
   const section = isWorkspace2 ? WORKSPACE_CLAUDE_MD : SINGLE_REPO_CLAUDE_MD;
-  if (existsSync14(claudeMdPath)) {
+  if (existsSync16(claudeMdPath)) {
     const content = readFileSync17(claudeMdPath, "utf-8");
     if (content.includes("## AXME Code")) {
       const sectionStart = content.indexOf("## AXME Code");
       const before = content.slice(0, sectionStart).trimEnd();
-      writeFileSync6(claudeMdPath, before ? before + "\n\n" + section : section, "utf-8");
+      writeFileSync7(claudeMdPath, before ? before + "\n\n" + section : section, "utf-8");
       console.log("  CLAUDE.md: updated AXME Code section");
     } else {
       appendFileSync4(claudeMdPath, "\n\n" + section, "utf-8");
       console.log("  CLAUDE.md: appended AXME Code section");
     }
   } else {
-    writeFileSync6(claudeMdPath, section, "utf-8");
+    writeFileSync7(claudeMdPath, section, "utf-8");
     console.log("  CLAUDE.md: created");
   }
 }
 function hasAuth() {
   if (process.env.ANTHROPIC_API_KEY) return true;
-  const { env } = process;
-  const pathDirs = (env.PATH || "").split(":");
-  for (const dir of pathDirs) {
-    if (existsSync14(join31(dir, "claude"))) return true;
-  }
-  return false;
+  const { findClaudePath: findClaudePath2 } = (init_agent_options(), __toCommonJS(agent_options_exports));
+  return !!findClaudePath2();
 }
 function printAuthStatus() {
   const options = detectAuthOptions();
@@ -43128,20 +43678,26 @@ async function ensureAuthConfiguredForSetup() {
 }
 function generateWorkspaceYaml(workspacePath, ws) {
   const wsYaml = jsYaml.dump({
-    name: workspacePath.split("/").pop(),
+    name: basename9(workspacePath),
     type: ws.type,
     manifest: ws.manifestPath,
     projects: ws.projects
   }, { lineWidth: 120 });
-  ensureDir(join31(workspacePath, AXME_CODE_DIR));
-  atomicWrite(join31(workspacePath, AXME_CODE_DIR, "workspace.yaml"), wsYaml);
+  ensureDir(join32(workspacePath, AXME_CODE_DIR));
+  atomicWrite(join32(workspacePath, AXME_CODE_DIR, "workspace.yaml"), wsYaml);
   console.log("  workspace.yaml: created");
 }
+function buildHookCommand(hookName, projectPath) {
+  const nodeExec = process.execPath;
+  const self = resolve8(process.argv[1] ?? "axme-code");
+  const q = (s) => `"${s}"`;
+  return `${q(nodeExec)} ${q(self)} hook ${hookName} --workspace ${q(projectPath)}`;
+}
 function configureHooks(projectPath) {
-  const claudeDir = join31(projectPath, ".claude");
-  const settingsPath = join31(claudeDir, "settings.json");
+  const claudeDir = join32(projectPath, ".claude");
+  const settingsPath = join32(claudeDir, "settings.json");
   let settings = {};
-  if (existsSync14(settingsPath)) {
+  if (existsSync16(settingsPath)) {
     try {
       settings = JSON.parse(readFileSync17(settingsPath, "utf-8"));
     } catch {
@@ -43160,7 +43716,7 @@ function configureHooks(projectPath) {
   settings.hooks.PreToolUse.push({
     hooks: [{
       type: "command",
-      command: `axme-code hook pre-tool-use --workspace ${projectPath}`,
+      command: buildHookCommand("pre-tool-use", projectPath),
       timeout: 5
     }]
   });
@@ -43169,7 +43725,7 @@ function configureHooks(projectPath) {
     matcher: "Edit|Write|NotebookEdit",
     hooks: [{
       type: "command",
-      command: `axme-code hook post-tool-use --workspace ${projectPath}`,
+      command: buildHookCommand("post-tool-use", projectPath),
       timeout: 10
     }]
   });
@@ -43177,12 +43733,12 @@ function configureHooks(projectPath) {
   settings.hooks.SessionEnd.push({
     hooks: [{
       type: "command",
-      command: `axme-code hook session-end --workspace ${projectPath}`,
+      command: buildHookCommand("session-end", projectPath),
       timeout: 120
     }]
   });
-  mkdirSync5(claudeDir, { recursive: true });
-  writeFileSync6(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+  mkdirSync6(claudeDir, { recursive: true });
+  writeFileSync7(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
   console.log("  .claude/settings.json: hooks configured (PostToolUse + SessionEnd)");
 }
 function writeBootstrapToAxmeMemory(projectPath, isWorkspace2, repoCount) {
@@ -43233,10 +43789,10 @@ async function main2() {
       const pluginMode = args.includes("--plugin") || !!process.env.CLAUDE_PLUGIN_ROOT;
       const setupArgs = args.filter((a) => a !== "--force" && a !== "--plugin");
       const projectPath = resolve8(setupArgs[1] || ".");
-      const hasGitDir = existsSync14(join31(projectPath, ".git"));
+      const hasGitDir = existsSync16(join32(projectPath, ".git"));
       const ws = detectWorkspace(projectPath);
       const isWorkspace2 = hasGitDir ? false : ws.type !== "single";
-      const childRepos = isWorkspace2 ? ws.projects.filter((p) => existsSync14(join31(projectPath, p.path, ".git"))).length : 0;
+      const childRepos = isWorkspace2 ? ws.projects.filter((p) => existsSync16(join32(projectPath, p.path, ".git"))).length : 0;
       let setupOutcome = "failed";
       let setupMethod = "deterministic";
       let setupPhaseFailed = null;
@@ -43286,7 +43842,7 @@ Error: No Claude authentication found.
           const totalCost = workspaceResult.cost.costUsd + projectResults.reduce((s, r) => s + r.cost.costUsd, 0);
           console.log(`  Workspace: ${workspaceResult.decisions.count} decisions, ${workspaceResult.memories.count} memories`);
           for (const r of projectResults) {
-            const name = r.projectPath.split("/").pop();
+            const name = basename9(r.projectPath);
             console.log(`  ${name}: ${r.decisions.count} decisions (${r.decisions.fromScan} LLM + ${r.decisions.fromPresets} presets)`);
           }
           if (totalCost > 0) console.log(`  Total cost: $${totalCost.toFixed(2)}`);
@@ -43334,13 +43890,13 @@ Error: No Claude authentication found.
         const mcpPaths = [projectPath];
         if (isWorkspace2) {
           for (const p of ws.projects) {
-            mcpPaths.push(join31(projectPath, p.path));
+            mcpPaths.push(join32(projectPath, p.path));
           }
         }
         for (const dir of mcpPaths) {
-          const mcpPath = join31(dir, ".mcp.json");
+          const mcpPath = join32(dir, ".mcp.json");
           let mcpConfig = {};
-          if (existsSync14(mcpPath)) {
+          if (existsSync16(mcpPath)) {
             try {
               mcpConfig = JSON.parse(readFileSync17(mcpPath, "utf-8"));
             } catch {
@@ -43349,7 +43905,7 @@ Error: No Claude authentication found.
           }
           if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {};
           mcpConfig.mcpServers.axme = mcpEntry;
-          writeFileSync6(mcpPath, JSON.stringify(mcpConfig, null, 2) + "\n", "utf-8");
+          writeFileSync7(mcpPath, JSON.stringify(mcpConfig, null, 2) + "\n", "utf-8");
         }
         console.log(`  .mcp.json: updated (${mcpPaths.length} locations)`);
       } else {
@@ -43361,18 +43917,18 @@ Error: No Claude authentication found.
       } else {
         console.log(`  Hooks: skipped (plugin provides hooks)`);
       }
-      const gitignorePath = join31(projectPath, ".gitignore");
-      if (existsSync14(gitignorePath)) {
+      const gitignorePath = join32(projectPath, ".gitignore");
+      if (existsSync16(gitignorePath)) {
         const content = readFileSync17(gitignorePath, "utf-8");
         if (!content.includes(".axme-code")) {
-          writeFileSync6(gitignorePath, content.trimEnd() + "\n.axme-code/\n", "utf-8");
+          writeFileSync7(gitignorePath, content.trimEnd() + "\n.axme-code/\n", "utf-8");
           console.log("  .gitignore: added .axme-code/");
         }
       } else {
-        writeFileSync6(gitignorePath, ".axme-code/\n", "utf-8");
+        writeFileSync7(gitignorePath, ".axme-code/\n", "utf-8");
         console.log("  .gitignore: created with .axme-code/");
       }
-      const repoCount = isWorkspace2 ? ws.projects.filter((p) => existsSync14(join31(projectPath, p.path, ".git"))).length : 0;
+      const repoCount = isWorkspace2 ? ws.projects.filter((p) => existsSync16(join32(projectPath, p.path, ".git"))).length : 0;
       writeBootstrapToAxmeMemory(projectPath, isWorkspace2, repoCount);
       setupOutcome = setupMethod === "llm" ? "success" : "fallback";
       await sendSetupTelemetry();
@@ -43405,8 +43961,23 @@ Error: No Claude authentication found.
       break;
     }
     case "check-init": {
+      if (process.env.CLAUDE_PLUGIN_ROOT) {
+        const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
+        const sdkDir = join32(pluginRoot, "node_modules", "@anthropic-ai", "claude-agent-sdk");
+        if (!existsSync16(sdkDir)) {
+          try {
+            const { execSync: execSync3 } = await import("node:child_process");
+            execSync3("npm install --omit=dev --ignore-scripts", {
+              cwd: pluginRoot,
+              stdio: "ignore",
+              timeout: 25e3
+            });
+          } catch {
+          }
+        }
+      }
       const checkPath = resolve8(args[1] || ".");
-      const claudeMdPath = join31(checkPath, "CLAUDE.md");
+      const claudeMdPath = join32(checkPath, "CLAUDE.md");
       const axmeSection = `## AXME Code
 
 ### Session Start (MANDATORY)
@@ -43414,13 +43985,13 @@ Call axme_context at the start of every session.
 If it returns "not initialized", run \`axme-code setup --plugin\` via Bash tool immediately.
 Do NOT skip \u2014 without context you will miss critical project rules.
 `;
-      if (existsSync14(claudeMdPath)) {
+      if (existsSync16(claudeMdPath)) {
         const content = readFileSync17(claudeMdPath, "utf-8");
         if (!content.includes("## AXME Code")) {
-          writeFileSync6(claudeMdPath, content.trimEnd() + "\n\n" + axmeSection, "utf-8");
+          writeFileSync7(claudeMdPath, content.trimEnd() + "\n\n" + axmeSection, "utf-8");
         }
       } else {
-        writeFileSync6(claudeMdPath, axmeSection, "utf-8");
+        writeFileSync7(claudeMdPath, axmeSection, "utf-8");
       }
       const { configExists: configExists2 } = await Promise.resolve().then(() => (init_config(), config_exports));
       if (configExists2(checkPath)) {
@@ -43599,6 +44170,76 @@ Current mode: ${saved.mode} (saved ${saved.chosenAt})`);
       console.error(`Unknown 'auth' subcommand: ${sub}`);
       console.error("Available: (none)|choose, status|show, use|set <subscription|api_key>");
       process.exit(1);
+    }
+    case "config": {
+      const sub = args[1];
+      const key = args[2];
+      const value = args[3];
+      const projectPath = resolve8(".");
+      const { readConfig: rc, writeConfig: wc } = await Promise.resolve().then(() => (init_config(), config_exports));
+      if (sub === "get") {
+        if (!key) {
+          console.error("usage: axme-code config get <key>  (e.g. context.mode)");
+          process.exit(1);
+        }
+        const cfg = rc(projectPath);
+        if (key === "context.mode") console.log(cfg.contextMode);
+        else if (key === "model") console.log(cfg.model);
+        else if (key === "auditor_model") console.log(cfg.auditorModel);
+        else if (key === "review_enabled") console.log(String(cfg.reviewEnabled));
+        else {
+          console.error(`Unknown config key: ${key}`);
+          process.exit(1);
+        }
+        break;
+      }
+      if (sub === "set") {
+        if (!key || value === void 0) {
+          console.error("usage: axme-code config set <key> <value>");
+          process.exit(1);
+        }
+        if (key !== "context.mode") {
+          console.error(`Set is currently supported only for context.mode. Got: ${key}`);
+          process.exit(1);
+        }
+        if (value !== "full" && value !== "search") {
+          console.error(`context.mode must be 'full' or 'search'. Got: ${value}`);
+          process.exit(1);
+        }
+        const cfg = rc(projectPath);
+        const prevMode = cfg.contextMode;
+        if (value === "full") {
+          wc(projectPath, { ...cfg, contextMode: "full" });
+          console.log("Saved: context.mode = full");
+          break;
+        }
+        const { runConfigSetSearch: runConfigSetSearch2 } = await Promise.resolve().then(() => (init_search_install(), search_install_exports));
+        const result = await runConfigSetSearch2(projectPath);
+        if (result.ok) {
+          wc(projectPath, { ...cfg, contextMode: "search" });
+          console.log(`Saved: context.mode = search (indexed ${result.indexed} entries)`);
+        } else {
+          wc(projectPath, { ...cfg, contextMode: prevMode });
+          console.error(`
+Failed to enable search mode: ${result.error}`);
+          console.error(`Config left at context.mode = ${prevMode}.`);
+          process.exit(1);
+        }
+        break;
+      }
+      console.error("Unknown 'config' subcommand. Available: get <key>, set <key> <value>");
+      process.exit(1);
+    }
+    case "reindex": {
+      const projectPath = resolve8(args[1] || ".");
+      const { reindexAll: reindexAll2 } = await Promise.resolve().then(() => (init_search_install(), search_install_exports));
+      const result = await reindexAll2(projectPath);
+      if (result.ok) console.log(`Reindexed ${result.indexed} entries.`);
+      else {
+        console.error(`Reindex failed: ${result.error}`);
+        process.exit(1);
+      }
+      break;
     }
     case "help":
     case "--help":

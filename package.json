@@ -2,6 +2,6 @@
   "name": "@axme/code-plugin",
   "private": true,
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.84"
+    "@anthropic-ai/claude-agent-sdk": "^0.2.112"
   }
 }

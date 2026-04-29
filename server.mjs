@@ -4,16 +4,10 @@ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {
-  get: (a, b) => (typeof require !== "undefined" ? require : a)[b]
-}) : x)(function(x) {
-  if (typeof require !== "undefined") return require.apply(this, arguments);
-  throw Error('Dynamic require of "' + x + '" is not supported');
-});
 var __esm = (fn, res) => function __init() {
   return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
 };
-var __commonJS = (cb, mod) => function __require2() {
+var __commonJS = (cb, mod) => function __require() {
   return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
 };
 var __export = (target, all) => {
@@ -6808,7 +6802,6 @@ var require_dist = __commonJS({
 
 // src/storage/engine.ts
 import {
-  writeFileSync,
   writeSync,
   readFileSync,
   renameSync,
@@ -6828,9 +6821,9 @@ function atomicWrite(filePath, content) {
   mkdirSync(dir, { recursive: true });
   const tmpPath = join(dir, `.tmp-${randomUUID()}`);
   try {
-    writeFileSync(tmpPath, content, "utf-8");
-    const fd = openSync(tmpPath, "r");
+    const fd = openSync(tmpPath, "w");
     try {
+      writeSync(fd, Buffer.from(content, "utf-8"));
       fsyncSync(fd);
     } finally {
       closeSync(fd);
@@ -6907,7 +6900,7 @@ var AXME_CODE_VERSION, AXME_CODE_DIR, DEFAULT_MODEL, DEFAULT_AUDITOR_MODEL, DEFA
 var init_types = __esm({
   "src/types.ts"() {
     "use strict";
-    AXME_CODE_VERSION = true ? "0.2.9" : "0.0.0-dev";
+    AXME_CODE_VERSION = true ? "0.5.0" : "0.0.0-dev";
     AXME_CODE_DIR = ".axme-code";
     DEFAULT_MODEL = "claude-sonnet-4-6";
     DEFAULT_AUDITOR_MODEL = "claude-sonnet-4-6";
@@ -6915,7 +6908,8 @@ var init_types = __esm({
       model: DEFAULT_MODEL,
       auditorModel: DEFAULT_AUDITOR_MODEL,
       reviewEnabled: true,
-      presets: ["essential-safety", "ai-agent-guardrails"]
+      presets: ["essential-safety", "ai-agent-guardrails"],
+      contextMode: "full"
     };
     DEFAULT_AGENT_PERMISSIONS = {
       architect: "readonly",
@@ -7012,7 +7006,7 @@ __export(decisions_exports, {
   toSlug: () => toSlug
 });
 import { readFileSync as readFileSync3, readdirSync as readdirSync2, writeFileSync as writeFileSync2 } from "node:fs";
-import { join as join4, resolve } from "node:path";
+import { join as join4, resolve, basename } from "node:path";
 function initDecisionStore(projectPath) {
   ensureDir(decisionsDir(projectPath));
 }
@@ -7131,7 +7125,7 @@ function enforceableDecisionsContext(projectPath) {
 }
 function saveScopedDecisions(decisions, projectPath, workspacePath) {
   let saved = 0, crossProject = 0;
-  const projectName = projectPath.split("/").pop() ?? "";
+  const projectName = basename(projectPath);
   for (const d of decisions) {
     const scope = d.scope;
     const isAllScope = !scope || scope.length === 0 || scope.length === 1 && scope[0] === "all";
@@ -7165,7 +7159,7 @@ function saveScopedDecisions(decisions, projectPath, workspacePath) {
 function listScopedDecisions(projectPath, workspacePath) {
   const projectDecisions = listDecisions(projectPath);
   if (!workspacePath || workspacePath === projectPath) return projectDecisions;
-  const projectName = projectPath.split("/").pop() ?? "";
+  const projectName = basename(projectPath);
   const wsDecisions = listDecisions(workspacePath);
   const relevantWs = wsDecisions.filter(
     (d) => d.scope && (d.scope.includes(projectName) || d.scope.includes("all"))
@@ -9964,10 +9958,10 @@ __export(safety_exports, {
   updateSafetyRule: () => updateSafetyRule,
   writeSafetyRules: () => writeSafetyRules
 });
-import { readFileSync as readFileSync4 } from "node:fs";
-import { join as join6, resolve as resolve2 } from "node:path";
+import { readFileSync as readFileSync5 } from "node:fs";
+import { join as join7, resolve as resolve2, basename as basename2 } from "node:path";
 import { execSync } from "node:child_process";
-import { homedir } from "node:os";
+import { homedir as homedir2 } from "node:os";
 function defaultRules() {
   return {
     git: { ...DEFAULT_GIT_RULES },
@@ -9985,7 +9979,7 @@ function defaultRules() {
 function initSafetyRules(projectPath) {
   const rules = defaultRules();
   try {
-    const gitConfig = readFileSync4(join6(projectPath, ".git/config"), "utf-8");
+    const gitConfig = readFileSync5(join7(projectPath, ".git/config"), "utf-8");
     if (gitConfig.includes('[branch "main"]')) {
       rules.git.protectedBranches = ["main"];
     }
@@ -9995,19 +9989,19 @@ function initSafetyRules(projectPath) {
   return rules;
 }
 function loadSafetyRules(projectPath) {
-  const rulesPath = join6(projectPath, AXME_CODE_DIR, SAFETY_DIR, RULES_FILE);
+  const rulesPath = join7(projectPath, AXME_CODE_DIR, SAFETY_DIR, RULES_FILE);
   if (!pathExists(rulesPath)) return defaultRules();
   try {
-    const parsed = jsYaml.load(readFileSync4(rulesPath, "utf-8"));
+    const parsed = jsYaml.load(readFileSync5(rulesPath, "utf-8"));
     return mergeSafetyRules(defaultRules(), parsed);
   } catch {
     return defaultRules();
   }
 }
 function writeSafetyRules(projectPath, rules) {
-  const dir = join6(projectPath, AXME_CODE_DIR, SAFETY_DIR);
+  const dir = join7(projectPath, AXME_CODE_DIR, SAFETY_DIR);
   ensureDir(dir);
-  atomicWrite(join6(dir, RULES_FILE), jsYaml.dump(rules, { lineWidth: 120 }));
+  atomicWrite(join7(dir, RULES_FILE), jsYaml.dump(rules, { lineWidth: 120 }));
 }
 function updateSafetyRule(projectPath, ruleType, value) {
   const rules = loadSafetyRules(projectPath);
@@ -10053,7 +10047,7 @@ function removeSafetyRule(projectPath, ruleType, value) {
   writeSafetyRules(projectPath, rules);
 }
 function safetyExists(projectPath) {
-  return pathExists(join6(projectPath, AXME_CODE_DIR, SAFETY_DIR, RULES_FILE));
+  return pathExists(join7(projectPath, AXME_CODE_DIR, SAFETY_DIR, RULES_FILE));
 }
 function safetyContext(projectPath) {
   const rules = loadSafetyRules(projectPath);
@@ -10276,7 +10270,7 @@ function checkGit(rules, command, _cwd, skipMergedCheck) {
 }
 function checkFilePath(rules, filePath, operation) {
   for (const denied of rules.filesystem.deniedPaths) {
-    const pattern = denied.replace("~", homedir());
+    const pattern = denied.replace("~", homedir2());
     if (matchesPattern(filePath, pattern)) return { allowed: false, reason: `Path denied: ${denied}` };
   }
   if (operation === "write") {
@@ -10288,7 +10282,7 @@ function checkFilePath(rules, filePath, operation) {
 }
 function matchesPattern(filePath, pattern) {
   if (filePath === pattern || filePath.startsWith(pattern)) return true;
-  const fileName = filePath.split("/").pop() ?? "";
+  const fileName = basename2(filePath);
   if (fileName === pattern) return true;
   if (pattern.includes("*")) {
     const starIdx = pattern.indexOf("*");
@@ -10346,14 +10340,14 @@ function saveScopedSafetyRule(ruleType, value, scope, projectPath, workspacePath
     for (const repoName of scope) {
       if (repoName === "all") continue;
       const targetPath = resolve2(workspacePath, repoName);
-      if (pathExists(join6(targetPath, ".axme-code")) || pathExists(join6(targetPath, ".git"))) {
+      if (pathExists(join7(targetPath, ".axme-code")) || pathExists(join7(targetPath, ".git"))) {
         updateSafetyRule(targetPath, ruleType, value);
         repos.push(repoName);
       }
     }
   } else {
     updateSafetyRule(projectPath, ruleType, value);
-    repos.push(projectPath.split("/").pop() ?? "");
+    repos.push(basename2(projectPath));
   }
   return { target: "scoped", repos };
 }
@@ -10483,24 +10477,24 @@ __export(memory_exports, {
   showMemories: () => showMemories,
   toMemorySlug: () => toMemorySlug
 });
-import { readFileSync as readFileSync5, readdirSync as readdirSync4 } from "node:fs";
-import { join as join7, resolve as resolve3 } from "node:path";
+import { readFileSync as readFileSync6, readdirSync as readdirSync4 } from "node:fs";
+import { join as join8, resolve as resolve3, basename as basename3 } from "node:path";
 function initMemoryStore(projectPath) {
-  ensureDir(join7(memoryDir(projectPath), FEEDBACK_DIR));
-  ensureDir(join7(memoryDir(projectPath), PATTERNS_DIR));
+  ensureDir(join8(memoryDir(projectPath), FEEDBACK_DIR));
+  ensureDir(join8(memoryDir(projectPath), PATTERNS_DIR));
 }
 function saveMemory(projectPath, memory) {
   const subdir = memory.type === "feedback" ? FEEDBACK_DIR : PATTERNS_DIR;
-  const dir = join7(memoryDir(projectPath), subdir);
+  const dir = join8(memoryDir(projectPath), subdir);
   ensureDir(dir);
-  atomicWrite(join7(dir, `${memory.slug}.md`), formatMemoryFile(memory));
+  atomicWrite(join8(dir, `${memory.slug}.md`), formatMemoryFile(memory));
 }
 function saveMemories(projectPath, memories) {
   for (const m of memories) saveMemory(projectPath, m);
 }
 function saveScopedMemories(memories, projectPath, workspacePath) {
   let saved = 0, crossProject = 0;
-  const projectName = projectPath.split("/").pop() ?? "";
+  const projectName = basename3(projectPath);
   for (const m of memories) {
     const scope = m.scope;
     const isAllScope = !scope || scope.length === 0 || scope.length === 1 && scope[0] === "all";
@@ -10516,7 +10510,7 @@ function saveScopedMemories(memories, projectPath, workspacePath) {
       for (const target of scope) {
         if (target === "all") continue;
         const targetPath = resolve3(workspacePath, target);
-        if (pathExists(join7(targetPath, ".axme-code")) || pathExists(join7(targetPath, ".git"))) {
+        if (pathExists(join8(targetPath, ".axme-code")) || pathExists(join8(targetPath, ".git"))) {
           initMemoryStore(targetPath);
           saveMemory(targetPath, m);
           writtenToRepo = true;
@@ -10546,11 +10540,11 @@ function listMemories(projectPath, type2) {
   ];
   for (const { subdir, type: dirType } of dirs) {
     if (type2 && type2 !== dirType) continue;
-    const dir = join7(memoryDir(projectPath), subdir);
+    const dir = join8(memoryDir(projectPath), subdir);
     if (!pathExists(dir)) continue;
     try {
       for (const f of readdirSync4(dir).filter((f2) => f2.endsWith(".md")).sort()) {
-        const m = parseMemoryFile(join7(dir, f));
+        const m = parseMemoryFile(join8(dir, f));
         if (m) result.push(m);
       }
     } catch {
@@ -10561,7 +10555,7 @@ function listMemories(projectPath, type2) {
 function listScopedMemories(projectPath, workspacePath) {
   const projectMemories = listMemories(projectPath);
   if (!workspacePath || workspacePath === projectPath) return projectMemories;
-  const projectName = projectPath.split("/").pop() ?? "";
+  const projectName = basename3(projectPath);
   const wsMemories = listMemories(workspacePath);
   const relevantWs = wsMemories.filter(
     (m) => m.scope && (m.scope.includes(projectName) || m.scope.includes("all"))
@@ -10590,7 +10584,7 @@ function getMemory(projectPath, slug) {
 }
 function deleteMemory(projectPath, slug) {
   for (const subdir of [FEEDBACK_DIR, PATTERNS_DIR]) {
-    if (removeFile(join7(memoryDir(projectPath), subdir, `${slug}.md`))) return true;
+    if (removeFile(join8(memoryDir(projectPath), subdir, `${slug}.md`))) return true;
   }
   return false;
 }
@@ -10598,7 +10592,7 @@ function memoryExists(projectPath) {
   return pathExists(memoryDir(projectPath));
 }
 function memoryDir(projectPath) {
-  return join7(projectPath, AXME_CODE_DIR, MEMORY_DIR);
+  return join8(projectPath, AXME_CODE_DIR, MEMORY_DIR);
 }
 function memoryContext(projectPath, keywords) {
   const relevant = searchMemories(projectPath, keywords).slice(0, 10);
@@ -10671,7 +10665,7 @@ ${m.body}
 }
 function parseMemoryFile(filePath) {
   try {
-    const content = readFileSync5(filePath, "utf-8");
+    const content = readFileSync6(filePath, "utf-8");
     const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
     if (!fmMatch) return null;
     const fm = fmMatch[1];
@@ -10822,10 +10816,10 @@ __export(plans_exports, {
   writeHandoff: () => writeHandoff
 });
 import { readdirSync as readdirSync5, unlinkSync as unlinkSync2 } from "node:fs";
-import { join as join9 } from "node:path";
+import { join as join10 } from "node:path";
 import { randomUUID as randomUUID2 } from "node:crypto";
 function plansRoot(projectPath) {
-  return join9(projectPath, AXME_CODE_DIR, PLANS_DIR);
+  return join10(projectPath, AXME_CODE_DIR, PLANS_DIR);
 }
 function initPlanStore(projectPath) {
   ensureDir(plansRoot(projectPath));
@@ -10856,7 +10850,7 @@ function createPlan(projectPath, title, steps, opts) {
 function savePlan(projectPath, plan) {
   ensureDir(plansRoot(projectPath));
   plan.updated = (/* @__PURE__ */ new Date()).toISOString();
-  atomicWrite(join9(plansRoot(projectPath), planFilename(plan.id, plan.slug)), formatPlanFile(plan));
+  atomicWrite(join10(plansRoot(projectPath), planFilename(plan.id, plan.slug)), formatPlanFile(plan));
 }
 function listPlans(projectPath, opts) {
   const dir = plansRoot(projectPath);
@@ -10864,7 +10858,7 @@ function listPlans(projectPath, opts) {
   const plans = [];
   try {
     for (const f of readdirSync5(dir).filter((f2) => f2.endsWith(".md") && f2 !== "handoff.md").sort()) {
-      const plan = parsePlanFile(readSafe(join9(dir, f)));
+      const plan = parsePlanFile(readSafe(join10(dir, f)));
       if (plan) {
         if (opts?.status && plan.status !== opts.status) continue;
         plans.push(plan);
@@ -10939,10 +10933,10 @@ function showPlan(projectPath, id) {
 function writeHandoff(projectPath, handoff) {
   ensureDir(plansRoot(projectPath));
   const content = formatHandoff(handoff);
-  atomicWrite(join9(plansRoot(projectPath), "handoff.md"), content);
+  atomicWrite(join10(plansRoot(projectPath), "handoff.md"), content);
   if (handoff.sessionId) {
     const shortId = handoff.sessionId.slice(0, 8);
-    atomicWrite(join9(plansRoot(projectPath), `handoff-${shortId}.md`), content);
+    atomicWrite(join10(plansRoot(projectPath), `handoff-${shortId}.md`), content);
     cleanupOldHandoffs(projectPath);
   }
 }
@@ -10979,7 +10973,7 @@ function cleanupOldHandoffs(projectPath) {
     const files = readdirSync5(dir).filter((f) => f.startsWith("handoff-") && f.endsWith(".md")).sort().reverse();
     for (const f of files.slice(HANDOFF_RETENTION)) {
       try {
-        unlinkSync2(join9(dir, f));
+        unlinkSync2(join10(dir, f));
       } catch {
       }
     }
@@ -10987,7 +10981,7 @@ function cleanupOldHandoffs(projectPath) {
   }
 }
 function readHandoff(projectPath) {
-  const content = readSafe(join9(plansRoot(projectPath), "handoff.md"));
+  const content = readSafe(join10(plansRoot(projectPath), "handoff.md"));
   if (!content || content.trim().length < 10) return null;
   const get = (heading) => {
     const regex = new RegExp(`## ${heading}\\n([\\s\\S]*?)(?=\\n## |$)`);
@@ -11155,15 +11149,15 @@ __export(sessions_exports, {
   writeClaudeSessionMapping: () => writeClaudeSessionMapping,
   writeSession: () => writeSession
 });
-import { join as join10, resolve as resolve4 } from "node:path";
-import { readdirSync as readdirSync6, readFileSync as readFileSync7, rmSync, openSync as openSync2, closeSync as closeSync2, unlinkSync as unlinkSync3, statSync as statSync2 } from "node:fs";
+import { join as join11, resolve as resolve4 } from "node:path";
+import { readdirSync as readdirSync6, readFileSync as readFileSync8, rmSync, openSync as openSync2, closeSync as closeSync2, unlinkSync as unlinkSync3, statSync as statSync3 } from "node:fs";
 import { randomUUID as randomUUID3 } from "node:crypto";
 function isRetryableError(errMsg) {
   return RETRYABLE_ERROR_PATTERNS.some((p) => p.test(errMsg));
 }
 function getClaudeCodePid() {
   try {
-    const stat = readFileSync7(`/proc/${process.ppid}/stat`, "utf-8");
+    const stat = readFileSync8(`/proc/${process.ppid}/stat`, "utf-8");
     const closeParen = stat.lastIndexOf(")");
     if (closeParen > 0) {
       const parts = stat.slice(closeParen + 2).split(" ");
@@ -11175,25 +11169,25 @@ function getClaudeCodePid() {
   return process.ppid;
 }
 function sessionsRoot(projectPath) {
-  return join10(projectPath, AXME_CODE_DIR, SESSIONS_DIR);
+  return join11(projectPath, AXME_CODE_DIR, SESSIONS_DIR);
 }
 function activeSessionsDir(projectPath) {
-  return join10(projectPath, AXME_CODE_DIR, ACTIVE_SESSIONS_DIR);
+  return join11(projectPath, AXME_CODE_DIR, ACTIVE_SESSIONS_DIR);
 }
 function activeMappingPath(projectPath, claudeSessionId) {
-  return join10(activeSessionsDir(projectPath), `${claudeSessionId}.txt`);
+  return join11(activeSessionsDir(projectPath), `${claudeSessionId}.txt`);
 }
 function legacyActiveSessionPath(projectPath) {
-  return join10(projectPath, AXME_CODE_DIR, LEGACY_ACTIVE_SESSION_FILE);
+  return join11(projectPath, AXME_CODE_DIR, LEGACY_ACTIVE_SESSION_FILE);
 }
 function legacyPendingAuditsDir(projectPath) {
-  return join10(projectPath, AXME_CODE_DIR, LEGACY_PENDING_AUDITS_DIR);
+  return join11(projectPath, AXME_CODE_DIR, LEGACY_PENDING_AUDITS_DIR);
 }
 function auditedOffsetsDir(projectPath) {
-  return join10(projectPath, AXME_CODE_DIR, AUDITED_OFFSETS_DIR);
+  return join11(projectPath, AXME_CODE_DIR, AUDITED_OFFSETS_DIR);
 }
 function auditedOffsetPath(projectPath, claudeSessionId) {
-  return join10(auditedOffsetsDir(projectPath), `${claudeSessionId}.txt`);
+  return join11(auditedOffsetsDir(projectPath), `${claudeSessionId}.txt`);
 }
 function readAuditedOffset(projectPath, claudeSessionId) {
   const raw = readSafe(auditedOffsetPath(projectPath, claudeSessionId)).trim();
@@ -11210,11 +11204,11 @@ function clearAuditedOffset(projectPath, claudeSessionId) {
   removeFile(auditedOffsetPath(projectPath, claudeSessionId));
 }
 function auditLogsDir(projectPath) {
-  return join10(projectPath, AXME_CODE_DIR, AUDIT_LOGS_DIR);
+  return join11(projectPath, AXME_CODE_DIR, AUDIT_LOGS_DIR);
 }
 function auditLogPath(projectPath, axmeSessionId, startedAt) {
   const datePart = startedAt.replace(/[:.]/g, "-").slice(0, 19);
-  return join10(auditLogsDir(projectPath), `${datePart}_${axmeSessionId.slice(0, 8)}.json`);
+  return join11(auditLogsDir(projectPath), `${datePart}_${axmeSessionId.slice(0, 8)}.json`);
 }
 function writeAuditLog(projectPath, log) {
   ensureDir(auditLogsDir(projectPath));
@@ -11236,7 +11230,7 @@ function clearLegacyPendingAuditsDir(projectPath) {
   if (!pathExists(dir)) return;
   try {
     for (const entry of readdirSync6(dir)) {
-      removeFile(join10(dir, entry));
+      removeFile(join11(dir, entry));
     }
   } catch {
   }
@@ -11324,14 +11318,14 @@ function clearLegacyActiveSession(projectPath) {
   removeFile(legacyActiveSessionPath(projectPath));
 }
 function sessionLockPath(projectPath, claudeSessionId) {
-  return join10(activeSessionsDir(projectPath), `${claudeSessionId}.lock`);
+  return join11(activeSessionsDir(projectPath), `${claudeSessionId}.lock`);
 }
 function acquireLock(projectPath, claudeSessionId) {
   const lp = sessionLockPath(projectPath, claudeSessionId);
   ensureDir(activeSessionsDir(projectPath));
   try {
     try {
-      const st = statSync2(lp);
+      const st = statSync3(lp);
       if (Date.now() - st.mtimeMs > LOCK_STALE_MS) unlinkSync3(lp);
     } catch {
     }
@@ -11408,7 +11402,7 @@ function ensureAxmeSessionForClaude(projectPath, claudeSessionId, transcriptPath
   }
 }
 function writeActiveSession(projectPath, sessionId) {
-  ensureDir(join10(projectPath, AXME_CODE_DIR));
+  ensureDir(join11(projectPath, AXME_CODE_DIR));
   atomicWrite(legacyActiveSessionPath(projectPath), sessionId);
 }
 function readActiveSession(projectPath) {
@@ -11440,12 +11434,12 @@ function createSession(projectPath) {
   return session;
 }
 function loadSession(projectPath, id) {
-  return readJson(join10(sessionsRoot(projectPath), id, "meta.json"));
+  return readJson(join11(sessionsRoot(projectPath), id, "meta.json"));
 }
 function writeSession(projectPath, session) {
-  const dir = join10(sessionsRoot(projectPath), session.id);
+  const dir = join11(sessionsRoot(projectPath), session.id);
   ensureDir(dir);
-  writeJson(join10(dir, "meta.json"), session);
+  writeJson(join11(dir, "meta.json"), session);
 }
 function closeSession(projectPath, id) {
   const session = loadSession(projectPath, id);
@@ -11493,7 +11487,7 @@ function listSessions(projectPath, opts) {
   try {
     for (const entry of readdirSync6(root, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
-      const session = readJson(join10(root, entry.name, "meta.json"));
+      const session = readJson(join11(root, entry.name, "meta.json"));
       if (session) sessions.push(session);
     }
   } catch {
@@ -11519,12 +11513,9 @@ function attachClaudeSession(projectPath, axmeSessionId, ref) {
   if (!ref.id || !ref.transcriptPath) return;
   let session = loadSession(projectPath, axmeSessionId);
   if (!session) {
+    const waitArr = new Int32Array(new SharedArrayBuffer(4));
     for (let retry = 0; retry < 3 && !session; retry++) {
-      const { setTimeout: wait } = __require("node:timers/promises");
-      try {
-        __require("child_process").execSync("sleep 0.05");
-      } catch {
-      }
+      Atomics.wait(waitArr, 0, 0, 50);
       session = loadSession(projectPath, axmeSessionId);
     }
     if (!session) return;
@@ -11567,7 +11558,7 @@ var init_sessions = __esm({
     ];
     RETRYABLE_MAX_ATTEMPTS = 5;
     LOCK_STALE_MS = 5e3;
-    LOCK_WAIT_MS = 500;
+    LOCK_WAIT_MS = 3e3;
     LOCK_POLL_MS = 50;
     MAX_AUDIT_ATTEMPTS = 1;
   }
@@ -11582,9 +11573,9 @@ __export(questions_exports, {
   markQuestionApplied: () => markQuestionApplied,
   questionsContext: () => questionsContext
 });
-import { join as join12 } from "node:path";
+import { join as join13 } from "node:path";
 function questionsPath(projectPath) {
-  return join12(projectPath, AXME_CODE_DIR, QUESTIONS_FILE);
+  return join13(projectPath, AXME_CODE_DIR, QUESTIONS_FILE);
 }
 function nextId(existing) {
   const maxNum = existing.reduce((max, q) => {
@@ -11646,7 +11637,7 @@ function askQuestion(projectPath, input) {
   };
   const block = formatQuestion(q);
   const path = questionsPath(projectPath);
-  ensureDir(join12(projectPath, AXME_CODE_DIR));
+  ensureDir(join13(projectPath, AXME_CODE_DIR));
   const prev = readSafe(path);
   atomicWrite(path, prev ? prev.trimEnd() + "\n\n" + block : block);
   return q;
@@ -11725,8 +11716,8 @@ __export(backlog_exports, {
   toBacklogSlug: () => toBacklogSlug,
   updateBacklogItem: () => updateBacklogItem
 });
-import { readdirSync as readdirSync8, readFileSync as readFileSync9 } from "node:fs";
-import { join as join13 } from "node:path";
+import { readdirSync as readdirSync8, readFileSync as readFileSync10 } from "node:fs";
+import { join as join14 } from "node:path";
 function initBacklogStore(projectPath) {
   ensureDir(backlogDir(projectPath));
 }
@@ -11768,7 +11759,7 @@ function listBacklogItems(projectPath, status) {
   const dir = backlogDir(projectPath);
   if (!pathExists(dir)) return [];
   const files = readdirSync8(dir).filter((f) => f.startsWith("B-") && f.endsWith(".md")).sort();
-  const items = files.map((f) => parseBacklogFile(readFileSync9(join13(dir, f), "utf-8"))).filter(Boolean);
+  const items = files.map((f) => parseBacklogFile(readFileSync10(join14(dir, f), "utf-8"))).filter(Boolean);
   if (status) return items.filter((i) => i.status === status);
   return items;
 }
@@ -11781,7 +11772,7 @@ function backlogExists(projectPath) {
   return pathExists(backlogDir(projectPath));
 }
 function backlogDir(projectPath) {
-  return join13(projectPath, AXME_CODE_DIR, BACKLOG_DIR);
+  return join14(projectPath, AXME_CODE_DIR, BACKLOG_DIR);
 }
 function backlogContext(projectPath) {
   const items = listBacklogItems(projectPath);
@@ -11816,7 +11807,7 @@ function showBacklog(projectPath, status) {
   }).join("\n");
 }
 function itemPath(projectPath, id, slug) {
-  return join13(backlogDir(projectPath), `${id}-${slug}.md`);
+  return join14(backlogDir(projectPath), `${id}-${slug}.md`);
 }
 function toBacklogSlug(text) {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50);
@@ -12105,11 +12096,11 @@ __export(telemetry_exports, {
   sendTelemetryBlocking: () => sendTelemetryBlocking,
   writeLastVersion: () => writeLastVersion
 });
-import { homedir as homedir2 } from "node:os";
-import { join as join17 } from "node:path";
+import { homedir as homedir3 } from "node:os";
+import { join as join18 } from "node:path";
 import {
-  existsSync as existsSync5,
-  readFileSync as readFileSync10,
+  existsSync as existsSync6,
+  readFileSync as readFileSync11,
   writeFileSync as writeFileSync3,
   mkdirSync as mkdirSync2,
   appendFileSync as appendFileSync2,
@@ -12118,16 +12109,16 @@ import {
 } from "node:fs";
 import { randomBytes } from "node:crypto";
 function getStateDir() {
-  return process.env.AXME_TELEMETRY_STATE_DIR || join17(homedir2(), ".local", "share", "axme-code");
+  return process.env.AXME_TELEMETRY_STATE_DIR || join18(homedir3(), ".local", "share", "axme-code");
 }
 function getMidFile() {
-  return join17(getStateDir(), "machine-id");
+  return join18(getStateDir(), "machine-id");
 }
 function getLastVersionFile() {
-  return join17(getStateDir(), "last-version");
+  return join18(getStateDir(), "last-version");
 }
 function getQueueFile() {
-  return join17(getStateDir(), "telemetry-queue.jsonl");
+  return join18(getStateDir(), "telemetry-queue.jsonl");
 }
 function isTelemetryDisabled() {
   return !!(process.env.AXME_TELEMETRY_DISABLED || process.env.DO_NOT_TRACK);
@@ -12143,9 +12134,9 @@ function isCI() {
 function getOrCreateMid() {
   if (cachedMid) return { mid: cachedMid, isNew: false };
   const disabled = isTelemetryDisabled();
-  if (existsSync5(getMidFile())) {
+  if (existsSync6(getMidFile())) {
     try {
-      const raw = readFileSync10(getMidFile(), "utf-8").trim();
+      const raw = readFileSync11(getMidFile(), "utf-8").trim();
       if (/^[0-9a-f]{64}$/.test(raw)) {
         cachedMid = raw;
         return { mid: raw, isNew: false };
@@ -12170,8 +12161,8 @@ function getOrCreateMid() {
 }
 function readLastVersion() {
   try {
-    if (!existsSync5(getLastVersionFile())) return null;
-    return readFileSync10(getLastVersionFile(), "utf-8").trim() || null;
+    if (!existsSync6(getLastVersionFile())) return null;
+    return readFileSync11(getLastVersionFile(), "utf-8").trim() || null;
   } catch {
     return null;
   }
@@ -12217,8 +12208,8 @@ async function postEvents(events) {
 }
 function readQueue() {
   try {
-    if (!existsSync5(getQueueFile())) return [];
-    const raw = readFileSync10(getQueueFile(), "utf-8");
+    if (!existsSync6(getQueueFile())) return [];
+    const raw = readFileSync11(getQueueFile(), "utf-8");
     const lines = raw.split("\n").filter((l) => l.trim());
     const out = [];
     for (const line of lines) {
@@ -12243,7 +12234,7 @@ function writeQueue(events) {
 function appendToQueue(event) {
   try {
     mkdirSync2(getStateDir(), { recursive: true });
-    if (existsSync5(getQueueFile())) {
+    if (existsSync6(getQueueFile())) {
       const existing = readQueue();
       if (existing.length >= QUEUE_MAX_EVENTS) {
         existing.push(event);
@@ -12374,8 +12365,8 @@ var init_telemetry = __esm({
 });
 
 // src/server.ts
-import { join as join19 } from "node:path";
-import { existsSync as existsSync7 } from "node:fs";
+import { join as join20 } from "node:path";
+import { existsSync as existsSync8 } from "node:fs";
 
 // node_modules/zod/v3/helpers/util.js
 var util;
@@ -35733,13 +35724,166 @@ init_engine();
 init_js_yaml();
 init_engine();
 init_types();
+import { readFileSync as readFileSync4 } from "node:fs";
 import { join as join5 } from "node:path";
 var CONFIG_FILE = "config.yaml";
+function readConfig(projectPath) {
+  const path = configPath(projectPath);
+  if (!pathExists(path)) return { ...DEFAULT_PROJECT_CONFIG };
+  return parseConfig(readFileSync4(path, "utf-8"));
+}
 function configExists(projectPath) {
   return pathExists(configPath(projectPath));
 }
 function configPath(projectPath) {
   return join5(projectPath, AXME_CODE_DIR, CONFIG_FILE);
+}
+function parseConfig(content) {
+  const doc = jsYaml.load(content);
+  if (!doc || typeof doc !== "object") return { ...DEFAULT_PROJECT_CONFIG };
+  let contextMode = DEFAULT_PROJECT_CONFIG.contextMode;
+  const ctxRaw = doc.context;
+  if (ctxRaw && typeof ctxRaw === "object" && (ctxRaw.mode === "full" || ctxRaw.mode === "search")) {
+    contextMode = ctxRaw.mode;
+  }
+  return {
+    model: String(doc.model ?? DEFAULT_PROJECT_CONFIG.model),
+    auditorModel: String(doc.auditor_model ?? DEFAULT_PROJECT_CONFIG.auditorModel),
+    reviewEnabled: doc.review_enabled !== false,
+    presets: Array.isArray(doc.presets) ? doc.presets.map(String).filter((p) => {
+      if (!p) return false;
+      const known = ["essential-safety", "ai-agent-guardrails", "production-ready", "team-collaboration"];
+      if (!known.includes(p)) {
+        process.stderr.write(`AXME config: unknown preset "${p}" \u2014 check spelling in config.yaml
+`);
+      }
+      return true;
+    }) : DEFAULT_PROJECT_CONFIG.presets,
+    contextMode
+  };
+}
+
+// src/storage/embeddings.ts
+init_engine();
+import { createRequire } from "node:module";
+import { existsSync as existsSync2, statSync as statSync2 } from "node:fs";
+import { homedir } from "node:os";
+import { join as join6 } from "node:path";
+import { pathToFileURL } from "node:url";
+var EMBED_DIMENSION = 384;
+var RUNTIME_DIR = join6(homedir(), ".local", "share", "axme-code", "runtime");
+var INDEX_DIRNAME = "_index";
+var EMBEDDINGS_FILENAME = "embeddings.json";
+function indexDir(projectPath) {
+  return join6(projectPath, ".axme-code", INDEX_DIRNAME);
+}
+function embeddingsPath(projectPath) {
+  return join6(indexDir(projectPath), EMBEDDINGS_FILENAME);
+}
+function isRuntimeInstalled() {
+  return existsSync2(join6(RUNTIME_DIR, "node_modules", "@huggingface", "transformers"));
+}
+var _cachedEmbedder = null;
+async function loadEmbedder() {
+  if (_cachedEmbedder) return _cachedEmbedder;
+  if (!isRuntimeInstalled()) return null;
+  const runtimeRequire = createRequire(join6(RUNTIME_DIR, "node_modules", ".package-lock.json"));
+  let mod;
+  try {
+    const requirePath = runtimeRequire.resolve("@huggingface/transformers");
+    mod = await import(pathToFileURL(requirePath).href);
+  } catch (e) {
+    const msg = e?.message ?? String(e);
+    if (process.platform === "win32" && /could not be found|onnxruntime_binding\.node/i.test(msg)) {
+      process.stderr.write(
+        `AXME: failed to load semantic-search runtime. The most common cause on Windows is
+      a missing Microsoft Visual C++ Redistributable (required by onnxruntime-node).
+      Install from https://aka.ms/vs/17/release/vc_redist.x64.exe and retry
+      \`axme-code config set context.mode search\` (or \`axme-code reindex\`).
+      Underlying error: ${msg}
+`
+      );
+    } else {
+      process.stderr.write(`AXME: failed to load semantic-search runtime: ${msg}
+`);
+    }
+    return null;
+  }
+  const pipe2 = await mod.pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2", {
+    dtype: "fp32"
+  });
+  async function embed(text) {
+    const result = await pipe2(text, { pooling: "mean", normalize: true });
+    return new Float32Array(result.data);
+  }
+  _cachedEmbedder = { embed, dimension: EMBED_DIMENSION };
+  return _cachedEmbedder;
+}
+function cosine(a, b) {
+  let s = 0;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) s += a[i] * b[i];
+  return s;
+}
+function loadEmbeddings(projectPath) {
+  const raw = readSafe(embeddingsPath(projectPath));
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed;
+  } catch {
+    return [];
+  }
+}
+var _writeQueue = Promise.resolve();
+function saveEmbeddings(projectPath, records) {
+  _writeQueue = _writeQueue.then(() => {
+    ensureDir(indexDir(projectPath));
+    const json3 = JSON.stringify(records);
+    atomicWrite(embeddingsPath(projectPath), json3);
+  }).catch(() => {
+  });
+  return _writeQueue;
+}
+function topK(records, qvec, k, type2) {
+  const filtered = type2 ? records.filter((r) => r.type === type2) : records;
+  const scored = filtered.map((r) => ({
+    slug: r.slug,
+    type: r.type,
+    title: r.title,
+    description: r.description,
+    score: cosine(qvec, r.embedding)
+  }));
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, Math.min(k, scored.length));
+}
+async function upsertEmbedding(projectPath, embedder, record2, text) {
+  const vec = await embedder.embed(text);
+  const records = loadEmbeddings(projectPath);
+  const idx = records.findIndex((r) => r.slug === record2.slug && r.type === record2.type);
+  const next = { ...record2, embedding: Array.from(vec) };
+  if (idx >= 0) records[idx] = next;
+  else records.push(next);
+  await saveEmbeddings(projectPath, records);
+  return true;
+}
+async function embedKbEntry(projectPath, slug, type2, title, description, contextMode) {
+  if (contextMode !== "search") return;
+  try {
+    const embedder = await loadEmbedder();
+    if (!embedder) return;
+    const text = `${title}. ${description}`;
+    await upsertEmbedding(
+      projectPath,
+      embedder,
+      { slug, type: type2, title, description, mtime: Date.now() },
+      text
+    );
+  } catch (e) {
+    process.stderr.write(`AXME embed: failed to index ${type2} '${slug}': ${e.message}
+`);
+  }
 }
 
 // src/tools/context.ts
@@ -35747,16 +35891,16 @@ init_types();
 init_safety();
 init_memory();
 init_workspace_merge();
-import { join as join14 } from "node:path";
-import { existsSync as existsSync4 } from "node:fs";
+import { join as join15 } from "node:path";
+import { existsSync as existsSync5 } from "node:fs";
 
 // src/storage/test-plan.ts
 init_engine();
 init_types();
-import { join as join8 } from "node:path";
+import { join as join9 } from "node:path";
 var TEST_PLAN_FILE = "test-plan.yaml";
 function testPlanPath(projectPath) {
-  return join8(projectPath, AXME_CODE_DIR, TEST_PLAN_FILE);
+  return join9(projectPath, AXME_CODE_DIR, TEST_PLAN_FILE);
 }
 function readTestPlan(projectPath) {
   const path = testPlanPath(projectPath);
@@ -35844,13 +35988,13 @@ init_plans();
 init_sessions();
 
 // src/utils/workspace-detector.ts
-import { readFileSync as readFileSync8, readdirSync as readdirSync7, existsSync as existsSync3, statSync as statSync3 } from "node:fs";
-import { join as join11, resolve as resolve5, dirname as dirname3, basename } from "node:path";
+import { readFileSync as readFileSync9, readdirSync as readdirSync7, existsSync as existsSync4, statSync as statSync4 } from "node:fs";
+import { join as join12, resolve as resolve5, dirname as dirname3, basename as basename4 } from "node:path";
 function detectWorkspace(cwd) {
   const root = resolve5(cwd);
   const result = detectVSCodeWorkspace(root) ?? detectDotnetSolution(root) ?? detectJetBrains(root) ?? detectSublime(root) ?? detectRush(root) ?? detectPnpmWorkspace(root) ?? detectNpmWorkspace(root) ?? detectLerna(root) ?? detectNx(root) ?? detectGradle(root) ?? detectMaven(root) ?? detectGitSubmodules(root) ?? detectMultiGit(root);
   if (!result) {
-    return { type: "single", root, projects: [{ path: ".", name: basename(root) }], manifestPath: null };
+    return { type: "single", root, projects: [{ path: ".", name: basename4(root) }], manifestPath: null };
   }
   return enrichWithGitRepos(root, result);
 }
@@ -35861,8 +36005,8 @@ function enrichWithGitRepos(root, ws) {
     if (entry.startsWith(".") || ["node_modules", "dist", "build", ".git"].includes(entry)) continue;
     const normalized = entry.replace(/^\.\/?/, "");
     if (knownPaths.has(normalized)) continue;
-    const entryPath = join11(root, entry);
-    if (isDir(entryPath) && existsSync3(join11(entryPath, ".git"))) {
+    const entryPath = join12(root, entry);
+    if (isDir(entryPath) && existsSync4(join12(entryPath, ".git"))) {
       newProjects.push({ path: normalized, name: normalized });
       knownPaths.add(normalized);
     }
@@ -35872,13 +36016,13 @@ function enrichWithGitRepos(root, ws) {
 function detectVSCodeWorkspace(root) {
   const files = safeReaddir(root).filter((f) => f.endsWith(".code-workspace"));
   if (files.length === 0) return null;
-  const filePath = join11(root, files[0]);
+  const filePath = join12(root, files[0]);
   try {
-    const raw = readFileSync8(filePath, "utf-8");
+    const raw = readFileSync9(filePath, "utf-8");
     const cleaned = raw.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
     const data = JSON.parse(cleaned);
     if (!data.folders || !Array.isArray(data.folders)) return null;
-    const projects = data.folders.map((f) => ({ path: f.path ?? ".", name: f.name ?? basename(f.path ?? ".") })).filter((p) => p.path !== ".");
+    const projects = data.folders.map((f) => ({ path: f.path ?? ".", name: f.name ?? basename4(f.path ?? ".") })).filter((p) => p.path !== ".");
     if (projects.length === 0) return null;
     return { type: "vscode", root, projects, manifestPath: filePath };
   } catch {
@@ -35888,9 +36032,9 @@ function detectVSCodeWorkspace(root) {
 function detectDotnetSolution(root) {
   const files = safeReaddir(root).filter((f) => f.endsWith(".sln"));
   if (files.length === 0) return null;
-  const filePath = join11(root, files[0]);
+  const filePath = join12(root, files[0]);
   try {
-    const content = readFileSync8(filePath, "utf-8");
+    const content = readFileSync9(filePath, "utf-8");
     const projectRegex = /Project\("[^"]*"\)\s*=\s*"([^"]*)",\s*"([^"]*)"/g;
     const solutionFolderGuid = "2150E333-8FDC-42A3-9474-1A3956D46DE8";
     const projects = [];
@@ -35911,17 +36055,17 @@ function detectDotnetSolution(root) {
   }
 }
 function detectJetBrains(root) {
-  const modulesPath = join11(root, ".idea", "modules.xml");
-  if (!existsSync3(modulesPath)) return null;
+  const modulesPath = join12(root, ".idea", "modules.xml");
+  if (!existsSync4(modulesPath)) return null;
   try {
-    const content = readFileSync8(modulesPath, "utf-8");
+    const content = readFileSync9(modulesPath, "utf-8");
     const moduleRegex = /filepath="\$PROJECT_DIR\$\/([^"]+\.iml)"/g;
     const projects = [];
     let match;
     while ((match = moduleRegex.exec(content)) !== null) {
       const dir = dirname3(match[1]);
       if (dir && dir !== "." && !projects.some((p) => p.path === dir)) {
-        projects.push({ path: dir, name: basename(dir) });
+        projects.push({ path: dir, name: basename4(dir) });
       }
     }
     if (projects.length < 2) return null;
@@ -35933,11 +36077,11 @@ function detectJetBrains(root) {
 function detectSublime(root) {
   const files = safeReaddir(root).filter((f) => f.endsWith(".sublime-project"));
   if (files.length === 0) return null;
-  const filePath = join11(root, files[0]);
+  const filePath = join12(root, files[0]);
   try {
-    const data = JSON.parse(readFileSync8(filePath, "utf-8"));
+    const data = JSON.parse(readFileSync9(filePath, "utf-8"));
     if (!data.folders || !Array.isArray(data.folders)) return null;
-    const projects = data.folders.filter((f) => f.path && f.path !== ".").map((f) => ({ path: f.path, name: f.name ?? basename(f.path) }));
+    const projects = data.folders.filter((f) => f.path && f.path !== ".").map((f) => ({ path: f.path, name: f.name ?? basename4(f.path) }));
     if (projects.length < 2) return null;
     return { type: "sublime", root, projects, manifestPath: filePath };
   } catch {
@@ -35945,14 +36089,14 @@ function detectSublime(root) {
   }
 }
 function detectRush(root) {
-  const filePath = join11(root, "rush.json");
-  if (!existsSync3(filePath)) return null;
+  const filePath = join12(root, "rush.json");
+  if (!existsSync4(filePath)) return null;
   try {
-    const data = JSON.parse(readFileSync8(filePath, "utf-8"));
+    const data = JSON.parse(readFileSync9(filePath, "utf-8"));
     if (!data.projects || !Array.isArray(data.projects)) return null;
     const projects = data.projects.map((p) => ({
       path: p.projectFolder,
-      name: p.packageName ?? basename(p.projectFolder)
+      name: p.packageName ?? basename4(p.projectFolder)
     }));
     if (projects.length < 2) return null;
     return { type: "rush", root, projects, manifestPath: filePath };
@@ -35961,10 +36105,10 @@ function detectRush(root) {
   }
 }
 function detectPnpmWorkspace(root) {
-  const filePath = join11(root, "pnpm-workspace.yaml");
-  if (!existsSync3(filePath)) return null;
+  const filePath = join12(root, "pnpm-workspace.yaml");
+  if (!existsSync4(filePath)) return null;
   try {
-    const content = readFileSync8(filePath, "utf-8");
+    const content = readFileSync9(filePath, "utf-8");
     const packagesMatch = content.match(/packages:\s*\n((?:\s+-\s+.+\n?)*)/);
     if (!packagesMatch) return null;
     const globs = packagesMatch[1].split("\n").map((line) => line.replace(/^\s*-\s*['"]?/, "").replace(/['"]?\s*$/, "").trim()).filter(Boolean).filter((g) => !g.startsWith("!"));
@@ -35976,10 +36120,10 @@ function detectPnpmWorkspace(root) {
   }
 }
 function detectNpmWorkspace(root) {
-  const filePath = join11(root, "package.json");
-  if (!existsSync3(filePath)) return null;
+  const filePath = join12(root, "package.json");
+  if (!existsSync4(filePath)) return null;
   try {
-    const data = JSON.parse(readFileSync8(filePath, "utf-8"));
+    const data = JSON.parse(readFileSync9(filePath, "utf-8"));
     if (!data.workspaces) return null;
     const globs = Array.isArray(data.workspaces) ? data.workspaces : data.workspaces.packages ?? [];
     if (globs.length === 0) return null;
@@ -35991,10 +36135,10 @@ function detectNpmWorkspace(root) {
   }
 }
 function detectLerna(root) {
-  const filePath = join11(root, "lerna.json");
-  if (!existsSync3(filePath)) return null;
+  const filePath = join12(root, "lerna.json");
+  if (!existsSync4(filePath)) return null;
   try {
-    const data = JSON.parse(readFileSync8(filePath, "utf-8"));
+    const data = JSON.parse(readFileSync9(filePath, "utf-8"));
     const globs = data.packages ?? ["packages/*"];
     const projects = resolveGlobs(root, globs);
     if (projects.length < 2) return null;
@@ -36004,34 +36148,34 @@ function detectLerna(root) {
   }
 }
 function detectNx(root) {
-  if (!existsSync3(join11(root, "nx.json"))) return null;
+  if (!existsSync4(join12(root, "nx.json"))) return null;
   const projects = [];
   for (const dir of ["apps", "packages", "libs", "projects"]) {
-    const fullDir = join11(root, dir);
-    if (!existsSync3(fullDir)) continue;
+    const fullDir = join12(root, dir);
+    if (!existsSync4(fullDir)) continue;
     for (const entry of safeReaddir(fullDir)) {
-      if (existsSync3(join11(fullDir, entry, "project.json"))) {
-        projects.push({ path: join11(dir, entry), name: entry });
+      if (existsSync4(join12(fullDir, entry, "project.json"))) {
+        projects.push({ path: join12(dir, entry), name: entry });
       }
     }
   }
   for (const entry of safeReaddir(root)) {
     if (entry.startsWith(".") || ["node_modules", "dist", "build"].includes(entry)) continue;
-    const entryPath = join11(root, entry);
-    if (isDir(entryPath) && existsSync3(join11(entryPath, "project.json")) && !projects.some((p) => p.path === entry)) {
+    const entryPath = join12(root, entry);
+    if (isDir(entryPath) && existsSync4(join12(entryPath, "project.json")) && !projects.some((p) => p.path === entry)) {
       projects.push({ path: entry, name: entry });
     }
   }
   if (projects.length < 2) return null;
-  return { type: "nx", root, projects, manifestPath: join11(root, "nx.json") };
+  return { type: "nx", root, projects, manifestPath: join12(root, "nx.json") };
 }
 function detectGradle(root) {
-  const groovyPath = join11(root, "settings.gradle");
-  const kotlinPath = join11(root, "settings.gradle.kts");
-  const filePath = existsSync3(groovyPath) ? groovyPath : existsSync3(kotlinPath) ? kotlinPath : null;
+  const groovyPath = join12(root, "settings.gradle");
+  const kotlinPath = join12(root, "settings.gradle.kts");
+  const filePath = existsSync4(groovyPath) ? groovyPath : existsSync4(kotlinPath) ? kotlinPath : null;
   if (!filePath) return null;
   try {
-    const content = readFileSync8(filePath, "utf-8");
+    const content = readFileSync9(filePath, "utf-8");
     const includeRegex = /include\s*\(?([^)]+)\)?/g;
     const projects = [];
     let match;
@@ -36040,7 +36184,7 @@ function detectGradle(root) {
       for (const mod of modules) {
         const path = mod.replace(/:/g, "/");
         if (path && !projects.some((p) => p.path === path)) {
-          projects.push({ path, name: basename(path) });
+          projects.push({ path, name: basename4(path) });
         }
       }
     }
@@ -36051,17 +36195,17 @@ function detectGradle(root) {
   }
 }
 function detectMaven(root) {
-  const filePath = join11(root, "pom.xml");
-  if (!existsSync3(filePath)) return null;
+  const filePath = join12(root, "pom.xml");
+  if (!existsSync4(filePath)) return null;
   try {
-    const content = readFileSync8(filePath, "utf-8");
+    const content = readFileSync9(filePath, "utf-8");
     const moduleRegex = /<module>([^<]+)<\/module>/g;
     const projects = [];
     let match;
     while ((match = moduleRegex.exec(content)) !== null) {
       const path = match[1].trim();
       if (path && !projects.some((p) => p.path === path)) {
-        projects.push({ path, name: basename(path) });
+        projects.push({ path, name: basename4(path) });
       }
     }
     if (projects.length < 2) return null;
@@ -36071,16 +36215,16 @@ function detectMaven(root) {
   }
 }
 function detectGitSubmodules(root) {
-  const filePath = join11(root, ".gitmodules");
-  if (!existsSync3(filePath)) return null;
+  const filePath = join12(root, ".gitmodules");
+  if (!existsSync4(filePath)) return null;
   try {
-    const content = readFileSync8(filePath, "utf-8");
+    const content = readFileSync9(filePath, "utf-8");
     const pathRegex = /path\s*=\s*(.+)/g;
     const projects = [];
     let match;
     while ((match = pathRegex.exec(content)) !== null) {
       const path = match[1].trim();
-      if (path) projects.push({ path, name: basename(path) });
+      if (path) projects.push({ path, name: basename4(path) });
     }
     if (projects.length < 2) return null;
     return { type: "submodules", root, projects, manifestPath: filePath };
@@ -36092,8 +36236,8 @@ function detectMultiGit(root) {
   const projects = [];
   for (const entry of safeReaddir(root)) {
     if (entry.startsWith(".") || ["node_modules", "dist", "build", ".git"].includes(entry)) continue;
-    const entryPath = join11(root, entry);
-    if (isDir(entryPath) && existsSync3(join11(entryPath, ".git"))) {
+    const entryPath = join12(root, entry);
+    if (isDir(entryPath) && existsSync4(join12(entryPath, ".git"))) {
       projects.push({ path: entry, name: entry });
     }
   }
@@ -36109,7 +36253,7 @@ function safeReaddir(dir) {
 }
 function isDir(path) {
   try {
-    return statSync3(path).isDirectory();
+    return statSync4(path).isDirectory();
   } catch {
     return false;
   }
@@ -36119,23 +36263,23 @@ function resolveGlobs(root, globs) {
   for (const glob of globs) {
     if (glob.endsWith("/*") || glob.endsWith("/**")) {
       const dir = glob.replace(/\/\*\*?$/, "");
-      const fullDir = join11(root, dir);
-      if (!existsSync3(fullDir)) continue;
+      const fullDir = join12(root, dir);
+      if (!existsSync4(fullDir)) continue;
       for (const entry of safeReaddir(fullDir)) {
-        const entryPath = join11(fullDir, entry);
+        const entryPath = join12(fullDir, entry);
         if (!isDir(entryPath)) continue;
-        if (existsSync3(join11(entryPath, "package.json"))) {
-          const path = join11(dir, entry);
+        if (existsSync4(join12(entryPath, "package.json"))) {
+          const path = join12(dir, entry);
           if (!projects.some((p) => p.path === path)) {
             projects.push({ path, name: entry });
           }
         }
       }
     } else {
-      const fullPath = join11(root, glob);
-      if (existsSync3(fullPath) && isDir(fullPath)) {
+      const fullPath = join12(root, glob);
+      if (existsSync4(fullPath) && isDir(fullPath)) {
         if (!projects.some((p) => p.path === glob)) {
-          projects.push({ path: glob, name: basename(glob) });
+          projects.push({ path: glob, name: basename4(glob) });
         }
       }
     }
@@ -36148,10 +36292,10 @@ init_questions();
 init_backlog();
 function buildStorageRootHeader(projectPath, workspacePath) {
   const ws = detectWorkspace(projectPath);
-  const hasGit = existsSync4(join14(projectPath, ".git"));
+  const hasGit = existsSync5(join15(projectPath, ".git"));
   const isWorkspace2 = hasGit ? false : ws.type !== "single" || workspacePath != null && workspacePath !== projectPath;
   const sessionType = isWorkspace2 ? "workspace (multi-repo)" : "single-repo";
-  const storageRoot = join14(projectPath, AXME_CODE_DIR);
+  const storageRoot = join15(projectPath, AXME_CODE_DIR);
   const lines = [
     "# AXME Storage Root",
     "",
@@ -36171,10 +36315,10 @@ function buildStorageRootHeader(projectPath, workspacePath) {
 function getFullContextSections(projectPath, workspacePath) {
   const parts = [];
   parts.push(buildStorageRootHeader(projectPath, workspacePath));
-  const storageDirExists = pathExists(join14(projectPath, AXME_CODE_DIR));
+  const storageDirExists = pathExists(join15(projectPath, AXME_CODE_DIR));
   const hasConfig = configExists(projectPath);
   if (!storageDirExists || !hasConfig) {
-    const setupLock = join14(projectPath, AXME_CODE_DIR, "setup.lock");
+    const setupLock = join15(projectPath, AXME_CODE_DIR, "setup.lock");
     if (pathExists(setupLock)) {
       return [parts[0] + "\n\nSetup is already running. Wait for it to finish, then call axme_context again."];
     }
@@ -36195,7 +36339,7 @@ function getFullContextSections(projectPath, workspacePath) {
   }
   const handoff = handoffContext(workspacePath ?? projectPath);
   if (handoff) parts.push(handoff);
-  const worklogPath2 = join14(workspacePath ?? projectPath, AXME_CODE_DIR, "worklog.md");
+  const worklogPath2 = join15(workspacePath ?? projectPath, AXME_CODE_DIR, "worklog.md");
   const worklogContent = readSafe(worklogPath2);
   if (worklogContent.length > 20) {
     const entries = worklogContent.split(/(?=^## )/m).filter((e) => e.trim());
@@ -36247,17 +36391,115 @@ function getFullContextSections(projectPath, workspacePath) {
     ];
     parts.push(lines.join("\n"));
   }
-  parts.push([
-    "## Load Full Knowledge Base",
-    "",
-    "Call these three tools **in parallel** now to load the complete knowledge base:",
-    "1. `axme_oracle` - project stack, structure, patterns, glossary",
-    "2. `axme_decisions` - architectural decisions with enforce levels",
-    "3. `axme_memories` - feedback and validated patterns",
-    "",
-    "**IMPORTANT**: if any tool output is truncated or saved to a file, use the Read tool to read the full file content into your context. Do not proceed with partial data."
-  ].join("\n"));
+  const config2 = readConfig(projectPath);
+  const totalKbSize = listMemoriesMerged(projectPath, workspacePath).length + listDecisionsMerged(projectPath, workspacePath).length;
+  if (config2.contextMode === "search") {
+    parts.push(buildSearchModeCatalog(projectPath, workspacePath));
+    parts.push(buildSearchModeInstructions(isRuntimeInstalled()));
+  } else {
+    parts.push([
+      "## Load Full Knowledge Base",
+      "",
+      "Call these three tools **in parallel** now to load the complete knowledge base:",
+      "1. `axme_oracle` - project stack, structure, patterns, glossary",
+      "2. `axme_decisions` - architectural decisions with enforce levels",
+      "3. `axme_memories` - feedback and validated patterns",
+      "",
+      "**IMPORTANT**: if any tool output is truncated or saved to a file, use the Read tool to read the full file content into your context. Do not proceed with partial data."
+    ].join("\n"));
+    if (totalKbSize > 100) {
+      parts.push([
+        "## \u26A0\uFE0F Knowledge base size \u2014 action required",
+        "",
+        `This project has **${totalKbSize} KB entries** (memories + decisions). Loading every body at`,
+        "session start is wasteful at this size \u2014 both in tokens and in your time waiting for the",
+        "context to load.",
+        "",
+        "**MUST** tell the user, in your first response:",
+        "",
+        `> Your AXME knowledge base has ${totalKbSize} entries. Search mode would cut session-start`,
+        "> tokens by ~10x \u2014 the agent gets a catalog (titles + 1-line summaries) at start and fetches",
+        "> full bodies on demand via axme_search_kb / axme_get_memory / axme_get_decision.",
+        "> ",
+        "> Switching is opt-in. The CLI command is:",
+        "> ",
+        "> ```bash",
+        "> axme-code config set context.mode search",
+        "> ```",
+        "> ",
+        "> It installs ~100 MB of local embedding runtime (transformers.js + MiniLM model \u2014 runs on",
+        "> your CPU, no API calls, no token cost). On install failure the config rolls back to full",
+        "> automatically. Revert any time with `axme-code config set context.mode full`.",
+        "> ",
+        "> Want me to run the command for you now, or will you run it yourself in your terminal?",
+        "",
+        "Then **WAIT** for the user's decision before continuing with the original task:",
+        "",
+        '- If the user says "run it" / "yes" / "go ahead" \u2192 execute the command via Bash and proceed.',
+        `- If the user says "I'll do it" / "later" / "skip" \u2192 do NOT run it; continue the task in full mode.`,
+        "- If the user is silent or asks an unrelated question \u2192 continue in full mode; do not nag again",
+        "  this session.",
+        "",
+        "Do NOT switch the mode without explicit user confirmation. Do NOT nag again in the same",
+        "session if the user declines or moves on."
+      ].join("\n"));
+    }
+  }
   return parts;
+}
+function listMemoriesMerged(projectPath, workspacePath) {
+  return workspacePath && workspacePath !== projectPath ? mergeMemories(listMemories(workspacePath), listMemories(projectPath)) : listMemories(projectPath);
+}
+function listDecisionsMerged(projectPath, workspacePath) {
+  return workspacePath && workspacePath !== projectPath ? mergeDecisions(listDecisions(workspacePath), listDecisions(projectPath)) : listDecisions(projectPath);
+}
+function buildSearchModeCatalog(projectPath, workspacePath) {
+  const memories = listMemoriesMerged(projectPath, workspacePath);
+  const decisions = listDecisionsMerged(projectPath, workspacePath);
+  const lines = [
+    "## Knowledge Base Catalog (search mode)",
+    "",
+    `${decisions.length} decision(s), ${memories.length} memory(ies). Bodies are NOT loaded.`,
+    ""
+  ];
+  if (decisions.length > 0) {
+    lines.push("### Decisions");
+    lines.push("");
+    for (const d of decisions) {
+      const enforce = d.enforce ?? "info";
+      const desc = d.decision ? d.decision.replace(/\s+/g, " ").slice(0, 200) : "";
+      lines.push(`- [${enforce}] **${d.id}** \u2014 ${d.title}${desc ? ` \u2014 ${desc}` : ""}`);
+    }
+    lines.push("");
+  }
+  if (memories.length > 0) {
+    lines.push("### Memories");
+    lines.push("");
+    for (const m of memories) {
+      const desc = m.description ? m.description.replace(/\s+/g, " ").slice(0, 200) : "";
+      lines.push(`- [${m.type}] **${m.slug}** \u2014 ${m.title}${desc ? ` \u2014 ${desc}` : ""}`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+function buildSearchModeInstructions(runtimeInstalled) {
+  const searchAvailable = runtimeInstalled ? "- `axme_search_kb(query, type?, k?)` \u2014 semantic search across both" : "- `axme_search_kb(query, ...)` \u2014 currently UNAVAILABLE (transformers runtime not installed; falls back to a hint message)";
+  return [
+    "## Search mode active \u2014 bodies fetched on demand",
+    "",
+    "You have a catalog of every memory and decision above (titles + descriptions only).",
+    "Bodies are NOT loaded. Token cost at session start is ~10x lower than full mode.",
+    "",
+    "**MUST**: scan the catalog before generating code. If a title is relevant to your task,",
+    "fetch the full body **before** writing.",
+    "",
+    "- `axme_get_memory(slug)` \u2014 full body of one memory",
+    "- `axme_get_decision(id_or_slug)` \u2014 full body of one decision",
+    searchAvailable,
+    "",
+    runtimeInstalled ? 'Use `axme_search_kb` for fuzzy lookups ("how did we handle X?"). Use `axme_get_*` when you already know the slug from the catalog.' : "Without the runtime, navigate the catalog above by topic and fetch bodies via `axme_get_*`. To enable semantic search: `axme-code config set context.mode search` (re-runs install)."
+  ].join("\n");
 }
 
 // src/server.ts
@@ -36316,9 +36558,9 @@ init_memory();
 init_safety();
 init_engine();
 init_types();
-import { join as join15 } from "node:path";
+import { join as join16 } from "node:path";
 function statusTool(projectPath) {
-  const initialized = pathExists(join15(projectPath, AXME_CODE_DIR));
+  const initialized = pathExists(join16(projectPath, AXME_CODE_DIR));
   if (!initialized) return "Project not initialized. Run axme_init first.";
   const oracle = oracleExists(projectPath) ? "initialized" : "not initialized";
   const decisions = listDecisions(projectPath);
@@ -36353,6 +36595,107 @@ function worklogTool(projectPath, limit = 20) {
   return showWorklog(projectPath, limit);
 }
 
+// src/tools/kb-search.ts
+init_memory();
+init_decisions();
+function formatMemory(m) {
+  const lines = [
+    `# ${m.title}`,
+    "",
+    `- **type**: ${m.type}`,
+    `- **slug**: ${m.slug}`,
+    `- **date**: ${m.date}`,
+    `- **source**: ${m.source}`,
+    ...m.scope ? [`- **scope**: ${m.scope.join(", ")}`] : [],
+    ...m.keywords && m.keywords.length ? [`- **keywords**: ${m.keywords.join(", ")}`] : [],
+    "",
+    "## Description",
+    "",
+    m.description
+  ];
+  if (m.body) {
+    lines.push("", "## Body", "", m.body);
+  }
+  return lines.join("\n");
+}
+function formatDecision(d) {
+  const lines = [
+    `# ${d.id}: ${d.title}`,
+    "",
+    `- **enforce**: ${d.enforce ?? "-"}`,
+    `- **status**: ${d.status ?? "active"}`,
+    `- **date**: ${d.date}`,
+    `- **source**: ${d.source}`,
+    ...d.scope ? [`- **scope**: ${d.scope.join(", ")}`] : [],
+    "",
+    "## Decision",
+    "",
+    d.decision
+  ];
+  if (d.reasoning) {
+    lines.push("", "## Reasoning", "", d.reasoning);
+  }
+  return lines.join("\n");
+}
+function getMemoryTool(projectPath, slug) {
+  const m = getMemory(projectPath, slug);
+  if (!m) {
+    return `Memory not found: '${slug}'. Use axme_memories to list available slugs, or axme_search_kb to find by topic.`;
+  }
+  return formatMemory(m);
+}
+function getDecisionTool(projectPath, idOrSlug) {
+  const d = getDecision(projectPath, idOrSlug);
+  if (!d) {
+    return `Decision not found: '${idOrSlug}'. Use axme_decisions to list, or axme_search_kb to find by topic.`;
+  }
+  return formatDecision(d);
+}
+async function searchKbTool(projectPath, input) {
+  const k = Math.max(1, Math.min(input.k ?? 5, 50));
+  const embedder = await loadEmbedder();
+  if (!embedder) {
+    return [
+      "Semantic search runtime is not installed.",
+      "",
+      "To enable: `axme-code config set context.mode search`",
+      "(installs ~100MB transformers.js + ~30MB MiniLM model, one-time).",
+      "",
+      "In the meantime, list all entries with axme_memories / axme_decisions",
+      "and use axme_get_memory(slug) / axme_get_decision(id) for full bodies."
+    ].join("\n");
+  }
+  const records = loadEmbeddings(projectPath);
+  if (records.length === 0) {
+    const memCount = listMemories(projectPath).length;
+    const decCount = listDecisions(projectPath).length;
+    if (memCount + decCount === 0) {
+      return "Knowledge base is empty \u2014 no memories or decisions to search.";
+    }
+    return [
+      `Embeddings index is empty (${memCount} memories, ${decCount} decisions on disk).`,
+      "Run `axme-code reindex` to build the index, then retry the search."
+    ].join("\n");
+  }
+  const qvec = await embedder.embed(input.query);
+  const hits = topK(records, qvec, k, input.type);
+  if (hits.length === 0) {
+    return `No matches in ${records.length} indexed entries for query: "${input.query}".`;
+  }
+  const lines = [
+    `Top ${hits.length} matches (of ${records.length} indexed):`,
+    ""
+  ];
+  for (const h of hits) {
+    const score = h.score.toFixed(3);
+    const tag = h.type === "memory" ? "memory" : "decision";
+    lines.push(`- [${tag}] **${h.slug}** (score ${score}) \u2014 ${h.title}`);
+    if (h.description) lines.push(`  ${h.description}`);
+  }
+  lines.push("", "Fetch a full body via axme_get_memory(slug) or axme_get_decision(id_or_slug).");
+  return lines.join("\n");
+}
+
 // src/server.ts
 init_sessions();
 init_worklog();
@@ -36362,12 +36705,12 @@ init_engine();
 init_types();
 import { spawn } from "node:child_process";
 import { openSync as openSync3, closeSync as closeSync3 } from "node:fs";
-import { join as join16 } from "node:path";
+import { join as join17 } from "node:path";
 var AUDIT_WORKER_LOGS_DIR = "audit-worker-logs";
 function spawnDetachedAuditWorker(workspacePath, sessionId) {
-  const logsDir = join16(workspacePath, AXME_CODE_DIR, AUDIT_WORKER_LOGS_DIR);
+  const logsDir = join17(workspacePath, AXME_CODE_DIR, AUDIT_WORKER_LOGS_DIR);
   ensureDir(logsDir);
-  const logPath = join16(logsDir, `${sessionId}.log`);
+  const logPath = join17(logsDir, `${sessionId}.log`);
   const fd = openSync3(logPath, "a");
   try {
     const cliPath = process.argv[1];
@@ -36396,10 +36739,10 @@ function spawnDetachedAuditWorker(workspacePath, sessionId) {
 
 // src/auto-update.ts
 init_types();
-import { homedir as homedir3 } from "node:os";
-import { join as join18, resolve as resolve6, basename as basename2 } from "node:path";
+import { homedir as homedir4 } from "node:os";
+import { join as join19, resolve as resolve6, basename as basename5 } from "node:path";
 import {
-  readFileSync as readFileSync11,
+  readFileSync as readFileSync12,
   writeFileSync as writeFileSync4,
   mkdirSync as mkdirSync3,
   renameSync as renameSync2,
@@ -36410,8 +36753,8 @@ var REPO = "AxmeAI/axme-code";
 var CHECK_INTERVAL_MS = 24 * 60 * 60 * 1e3;
 var API_TIMEOUT_MS = 5e3;
 var DOWNLOAD_TIMEOUT_MS = 6e4;
-var CONFIG_DIR = join18(homedir3(), ".config", "axme-code");
-var CACHE_FILE = join18(CONFIG_DIR, "update_check.json");
+var CONFIG_DIR = join19(homedir4(), ".config", "axme-code");
+var CACHE_FILE = join19(CONFIG_DIR, "update_check.json");
 var updateNotification = null;
 function getUpdateNotification() {
   return updateNotification;
@@ -36434,7 +36777,7 @@ function getBinaryPath() {
   const arg1 = process.argv[1];
   if (!arg1) return null;
   const resolved = resolve6(arg1);
-  const name = basename2(resolved);
+  const name = basename5(resolved);
   if (name === "axme-code" && !resolved.endsWith(".js") && !resolved.endsWith(".ts")) {
     return resolved;
   }
@@ -36442,7 +36785,7 @@ function getBinaryPath() {
 }
 function readCache() {
   try {
-    return JSON.parse(readFileSync11(CACHE_FILE, "utf-8"));
+    return JSON.parse(readFileSync12(CACHE_FILE, "utf-8"));
   } catch {
     return null;
   }
@@ -36563,7 +36906,7 @@ async function backgroundAutoUpdate() {
 // src/server.ts
 init_telemetry();
 var serverCwd = process.cwd();
-var serverHasGit = existsSync7(join19(serverCwd, ".git"));
+var serverHasGit = existsSync8(join20(serverCwd, ".git"));
 var serverWorkspace = detectWorkspace(serverCwd);
 var isWorkspace = serverHasGit ? false : serverWorkspace.type !== "single";
 var defaultProjectPath = serverCwd;
@@ -36709,7 +37052,7 @@ function ppWithScope(project_path, scope) {
     const repoScope = scope.find((s) => s !== "all");
     if (repoScope) {
       const match = serverWorkspace.projects.find((p) => p.name === repoScope);
-      if (match) return join19(defaultProjectPath, match.path);
+      if (match) return join20(defaultProjectPath, match.path);
     }
   }
   return defaultProjectPath;
@@ -36833,6 +37176,7 @@ server.tool(
     const sid = getOwnedSessionIdForLogging();
     const resolved = ppWithScope(project_path, scope);
     const result = saveMemoryTool(resolved, { type: type2, title, description, body, keywords, scope }, sid);
+    await embedKbEntry(resolved, result.slug, "memory", title, description, readConfig(resolved).contextMode);
     return { content: [{ type: "text", text: `Memory saved: ${result.slug} (${type2}) -> ${resolved}` }] };
   }
 );
@@ -36850,6 +37194,7 @@ server.tool(
   async ({ project_path, title, decision, reasoning, enforce, scope }) => {
     const resolved = ppWithScope(project_path, scope);
     const result = saveDecisionTool(resolved, { title, decision, reasoning, enforce, scope });
+    await embedKbEntry(resolved, result.id, "decision", title, decision, readConfig(resolved).contextMode);
     return { content: [{ type: "text", text: `Decision saved: ${result.id} - ${title} -> ${resolved}` }] };
   }
 );
@@ -36875,6 +37220,42 @@ server.tool(
   },
   async ({ project_path }) => {
     return { content: [{ type: "text", text: showSafetyTool(pp(project_path)) }] };
+  }
+);
+server.tool(
+  "axme_get_memory",
+  "Fetch the full body of one memory by slug. Use after seeing the slug in axme_context (search mode catalog) or axme_search_kb results.",
+  {
+    project_path: external_exports3.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+    slug: external_exports3.string().describe("Memory slug, e.g. 'always-call-axme-context-first'")
+  },
+  async ({ project_path, slug }) => {
+    return { content: [{ type: "text", text: getMemoryTool(pp(project_path), slug) }] };
+  }
+);
+server.tool(
+  "axme_get_decision",
+  "Fetch the full body of one decision by ID (e.g. 'D-110') or slug. Use after seeing it in axme_context (search mode catalog) or axme_search_kb results.",
+  {
+    project_path: external_exports3.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+    id_or_slug: external_exports3.string().describe("Decision ID like 'D-110' or its slug")
+  },
+  async ({ project_path, id_or_slug }) => {
+    return { content: [{ type: "text", text: getDecisionTool(pp(project_path), id_or_slug) }] };
+  }
+);
+server.tool(
+  "axme_search_kb",
+  "Semantic search across memories and decisions. Useful for fuzzy lookups mid-session ('how did we handle X?'). Requires the embeddings runtime \u2014 install with `axme-code config set context.mode search`.",
+  {
+    project_path: external_exports3.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+    query: external_exports3.string().describe("Search query in natural language"),
+    k: external_exports3.number().int().min(1).max(50).optional().describe("Top K results to return (default 5, max 50)"),
+    type: external_exports3.enum(["memory", "decision"]).optional().describe("Filter results to one type. Omit to search both.")
+  },
+  async ({ project_path, query, k, type: type2 }) => {
+    const text = await searchKbTool(pp(project_path), { query, k, type: type2 });
+    return { content: [{ type: "text", text }] };
   }
 );
 server.tool(
@@ -37264,7 +37645,7 @@ server.tool(
       source: "agent"
     });
     const { appendFileSync: appendFileSync3 } = await import("node:fs");
-    const { join: join20 } = await import("node:path");
+    const { join: join21 } = await import("node:path");
     const { AXME_CODE_DIR: AXME_CODE_DIR2 } = await Promise.resolve().then(() => (init_types(), types_exports));
     const isoDate = (/* @__PURE__ */ new Date()).toISOString().slice(0, 16).replace("T", " ");
     const shortId = sid.slice(0, 8);
@@ -37274,7 +37655,7 @@ ${args.worklog_entry}
 
 `;
     try {
-      appendFileSync3(join20(targetPath, AXME_CODE_DIR2, "worklog.md"), worklogEntry);
+      appendFileSync3(join21(targetPath, AXME_CODE_DIR2, "worklog.md"), worklogEntry);
     } catch {
     }
     const { loadSession: loadSession2, writeSession: writeSession2 } = await Promise.resolve().then(() => (init_sessions(), sessions_exports));
