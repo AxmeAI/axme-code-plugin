@@ -2667,6 +2667,19 @@ var init_js_yaml = __esm({
 });
 
 // src/storage/engine.ts
+var engine_exports = {};
+__export(engine_exports, {
+  appendLine: () => appendLine,
+  atomicWrite: () => atomicWrite,
+  ensureDir: () => ensureDir,
+  isDir: () => isDir,
+  listFiles: () => listFiles,
+  pathExists: () => pathExists,
+  readJson: () => readJson,
+  readSafe: () => readSafe,
+  removeFile: () => removeFile,
+  writeJson: () => writeJson
+});
 import {
   writeSync,
   readFileSync,
@@ -2738,6 +2751,21 @@ function ensureDir(dirPath) {
 function pathExists(filePath) {
   return existsSync(filePath);
 }
+function listFiles(dirPath, filter) {
+  try {
+    const entries = readdirSync(dirPath);
+    return filter ? entries.filter(filter) : entries;
+  } catch {
+    return [];
+  }
+}
+function isDir(filePath) {
+  try {
+    return statSync(filePath).isDirectory();
+  } catch {
+    return false;
+  }
+}
 function removeFile(filePath) {
   try {
     unlinkSync(filePath);
@@ -2766,7 +2794,7 @@ var AXME_CODE_VERSION, AXME_CODE_DIR, DEFAULT_MODEL, DEFAULT_AUDITOR_MODEL, DEFA
 var init_types = __esm({
   "src/types.ts"() {
     "use strict";
-    AXME_CODE_VERSION = true ? "0.5.0" : "0.0.0-dev";
+    AXME_CODE_VERSION = true ? "0.6.0" : "0.0.0-dev";
     AXME_CODE_DIR = ".axme-code";
     DEFAULT_MODEL = "claude-sonnet-4-6";
     DEFAULT_AUDITOR_MODEL = "claude-sonnet-4-6";
@@ -2787,6 +2815,19 @@ var init_types = __esm({
 });
 
 // src/storage/oracle.ts
+var oracle_exports = {};
+__export(oracle_exports, {
+  ensureOracleBootstrapped: () => ensureOracleBootstrapped,
+  getOracleSections: () => getOracleSections,
+  initOracleDeterministic: () => initOracleDeterministic,
+  loadOracleFiles: () => loadOracleFiles,
+  oracleContext: () => oracleContext,
+  oracleDir: () => oracleDir,
+  oracleExists: () => oracleExists,
+  saveOracleSection: () => saveOracleSection,
+  showOracle: () => showOracle,
+  writeOracleFiles: () => writeOracleFiles
+});
 import { readFileSync as readFileSync2, readdirSync as readdirSync2, existsSync as existsSync2, statSync as statSync2 } from "node:fs";
 import { join as join2 } from "node:path";
 function writeOracleFiles(projectPath, files) {
@@ -2807,15 +2848,54 @@ function loadOracleFiles(projectPath) {
   if (!stack && !structure && !patterns && !glossary) return null;
   return { stack, structure, patterns, glossary };
 }
+function oracleContext(projectPath) {
+  const files = loadOracleFiles(projectPath);
+  if (!files) return "";
+  const parts = [];
+  if (files.stack) parts.push(`## Stack
+${files.stack}`);
+  if (files.structure) parts.push(`## Structure
+${files.structure}`);
+  if (files.patterns) parts.push(`## Patterns
+${files.patterns}`);
+  if (files.glossary) parts.push(`## Glossary
+${files.glossary}`);
+  return parts.join("\n\n");
+}
+function showOracle(projectPath) {
+  return getOracleSections(projectPath).join("\n\n---\n\n");
+}
 function getOracleSections(projectPath) {
   const files = loadOracleFiles(projectPath);
-  if (!files) return ["Oracle not initialized. Run axme_init first."];
+  if (!files) {
+    return [
+      "Oracle is empty for this project. Two ways to populate:\n\n\u2022 Cooperative \u2014 ask the agent to enrich oracle inline (calls axme_save_oracle for each section: stack, structure, patterns, glossary).\n\u2022 API-key path \u2014 run `axme-code setup` in a terminal (or `AXME: Set up workspace` from Cursor's Command Palette) to run the LLM oracle scanner.\n\nIf `.axme-code/oracle/` already exists but is empty, the MCP server bootstraps a deterministic skeleton (detected stack + structure) on the next save call \u2014 the agent can then enrich it."
+    ];
+  }
   const sections = [];
   if (files.stack) sections.push("# Stack\n\n" + files.stack);
   if (files.structure) sections.push("# Structure\n\n" + files.structure);
   if (files.patterns) sections.push("# Patterns\n\n" + files.patterns);
   if (files.glossary) sections.push("# Glossary\n\n" + files.glossary);
   return sections;
+}
+function ensureOracleBootstrapped(projectPath) {
+  if (!pathExists(join2(projectPath, AXME_CODE_DIR))) return;
+  if (loadOracleFiles(projectPath)) return;
+  try {
+    initOracleDeterministic(projectPath);
+  } catch {
+  }
+}
+function saveOracleSection(projectPath, section, content, mode = "replace") {
+  const existing = loadOracleFiles(projectPath) ?? { stack: "", structure: "", patterns: "", glossary: "" };
+  const next = { ...existing };
+  if (mode === "append" && existing[section]) {
+    next[section] = existing[section] + "\n\n" + content;
+  } else {
+    next[section] = content;
+  }
+  writeOracleFiles(projectPath, next);
 }
 function oracleExists(projectPath) {
   return pathExists(join2(oracleDir(projectPath), "stack.md"));
@@ -4102,14 +4182,22 @@ function checkGit(rules, command2, _cwd, skipMergedCheck) {
   }
   return { allowed: true };
 }
+function normalizePathForSafety(p) {
+  const slashed = p.replace(/\\/g, "/");
+  return process.platform === "win32" ? slashed.toLowerCase() : slashed;
+}
 function checkFilePath(rules, filePath, operation) {
   for (const denied of rules.filesystem.deniedPaths) {
     const pattern = denied.replace("~", homedir());
     if (matchesPattern(filePath, pattern)) return { allowed: false, reason: `Path denied: ${denied}` };
   }
   if (operation === "write") {
+    const normFile = normalizePathForSafety(filePath);
     for (const readOnly of rules.filesystem.readOnlyPaths) {
-      if (filePath.startsWith(readOnly)) return { allowed: false, reason: `Path is read-only: ${readOnly}` };
+      const normRule = normalizePathForSafety(readOnly.replace("~", homedir()));
+      if (normFile === normRule || normFile.startsWith(normRule + "/")) {
+        return { allowed: false, reason: `Path is read-only: ${readOnly}` };
+      }
     }
   }
   return { allowed: true };
@@ -4623,16 +4711,17 @@ function waitForLock(projectPath, claudeSessionId) {
   }
   return false;
 }
-function ensureAxmeSessionForClaude(projectPath, claudeSessionId, transcriptPath, toolName) {
+function ensureAxmeSessionForClaude(projectPath, claudeSessionId, transcriptPath, toolName, ide) {
   const existing = readClaudeSessionMapping(projectPath, claudeSessionId);
   if (existing) {
     const existingSession = loadSession(projectPath, existing);
-    const isStale = !existingSession || existingSession.auditedAt != null || existingSession.pid != null && !isPidAlive(existingSession.pid);
-    if (!isStale) {
+    const isStale2 = !existingSession || existingSession.auditedAt != null || existingSession.pid != null && !isPidAlive(existingSession.pid);
+    if (!isStale2) {
       attachClaudeSession(projectPath, existing, {
         id: claudeSessionId,
         transcriptPath,
-        role: "main"
+        role: "main",
+        ide
       });
       writeClaudeSessionMapping(projectPath, claudeSessionId, existing);
       return existing;
@@ -4646,7 +4735,7 @@ function ensureAxmeSessionForClaude(projectPath, claudeSessionId, transcriptPath
   try {
     const recheck = readClaudeSessionMapping(projectPath, claudeSessionId);
     if (recheck && recheck !== existing) {
-      attachClaudeSession(projectPath, recheck, { id: claudeSessionId, transcriptPath, role: "main" });
+      attachClaudeSession(projectPath, recheck, { id: claudeSessionId, transcriptPath, role: "main", ide });
       return recheck;
     }
     if (existing) {
@@ -4665,7 +4754,8 @@ function ensureAxmeSessionForClaude(projectPath, claudeSessionId, transcriptPath
     attachClaudeSession(projectPath, axmeSession.id, {
       id: claudeSessionId,
       transcriptPath,
-      role: "main"
+      role: "main",
+      ide
     });
     return axmeSession.id;
   } finally {
@@ -4797,7 +4887,8 @@ function attachClaudeSession(projectPath, axmeSessionId, ref) {
     id: ref.id,
     transcriptPath: ref.transcriptPath,
     firstSeen: (/* @__PURE__ */ new Date()).toISOString(),
-    ...ref.role ? { role: ref.role } : {}
+    ...ref.role ? { role: ref.role } : {},
+    ...ref.ide ? { ide: ref.ide } : {}
   };
   session.claudeSessions.push(entry);
   writeSession(projectPath, session);
@@ -5401,6 +5492,38 @@ function maskApiKey(key) {
   const prefix = trimmed.startsWith("sk-ant-") ? "sk-ant-" : "";
   return `${prefix}...${last4}`;
 }
+function maskCursorKey(key) {
+  const trimmed = key.trim();
+  return `...${trimmed.slice(-4)}`;
+}
+function detectCursorSdk() {
+  const envKey = process.env.CURSOR_API_KEY;
+  if (envKey && envKey.trim()) {
+    return {
+      present: true,
+      source: "env",
+      details: "CURSOR_API_KEY",
+      masked: maskCursorKey(envKey)
+    };
+  }
+  const cursorYaml = join12(homedir2(), ".config", "axme-code", "cursor.yaml");
+  if (pathExists(cursorYaml)) {
+    try {
+      const raw = readSafe(cursorYaml);
+      const parsed = jsYaml.load(raw);
+      if (parsed && typeof parsed.apiKey === "string" && parsed.apiKey.trim()) {
+        return {
+          present: true,
+          source: "filesystem",
+          details: cursorYaml,
+          masked: maskCursorKey(parsed.apiKey)
+        };
+      }
+    } catch {
+    }
+  }
+  return { present: false };
+}
 function detectApiKey() {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key || !key.trim()) return { present: false };
@@ -5453,18 +5576,31 @@ function detectSubscription() {
 function detectAuthOptions() {
   return {
     apiKey: detectApiKey(),
-    subscription: detectSubscription()
+    subscription: detectSubscription(),
+    cursorSdk: detectCursorSdk()
   };
 }
 var init_auth_detect = __esm({
   "src/utils/auth-detect.ts"() {
     "use strict";
     init_engine();
+    init_js_yaml();
     init_agent_options();
   }
 });
 
 // src/utils/auth-config.ts
+var auth_config_exports = {};
+__export(auth_config_exports, {
+  authConfigPath: () => authConfigPath,
+  cursorApiKeyPath: () => cursorApiKeyPath,
+  loadAuthConfig: () => loadAuthConfig,
+  loadCursorApiKey: () => loadCursorApiKey,
+  resolveAuthMode: () => resolveAuthMode,
+  saveAuthConfig: () => saveAuthConfig,
+  saveCursorApiKey: () => saveCursorApiKey
+});
+import { chmodSync } from "node:fs";
 import { homedir as homedir3 } from "node:os";
 import { join as join13 } from "node:path";
 function configDir() {
@@ -5472,6 +5608,9 @@ function configDir() {
 }
 function authConfigPath() {
   return join13(configDir(), "auth.yaml");
+}
+function cursorApiKeyPath() {
+  return join13(configDir(), "cursor.yaml");
 }
 function loadAuthConfig() {
   const file2 = authConfigPath();
@@ -5481,7 +5620,7 @@ function loadAuthConfig() {
   try {
     const parsed = jsYaml.load(raw);
     if (!parsed || typeof parsed !== "object") return null;
-    if (parsed.mode !== "subscription" && parsed.mode !== "api_key") return null;
+    if (!VALID_AUTH_MODES.includes(parsed.mode)) return null;
     const chosenAt = typeof parsed.chosenAt === "string" ? parsed.chosenAt : (/* @__PURE__ */ new Date()).toISOString();
     return { mode: parsed.mode, chosenAt };
   } catch {
@@ -5494,8 +5633,35 @@ function saveAuthConfig(mode) {
   atomicWrite(authConfigPath(), jsYaml.dump(config2));
   return config2;
 }
+function loadCursorApiKey() {
+  const file2 = cursorApiKeyPath();
+  if (!pathExists(file2)) return void 0;
+  const raw = readSafe(file2);
+  if (!raw) return void 0;
+  try {
+    const parsed = jsYaml.load(raw);
+    if (!parsed || typeof parsed !== "object") return void 0;
+    const key = parsed.apiKey;
+    if (typeof key !== "string" || !key.trim()) return void 0;
+    return key.trim();
+  } catch {
+    return void 0;
+  }
+}
+function saveCursorApiKey(apiKey) {
+  ensureDir(configDir());
+  const config2 = { apiKey: apiKey.trim(), chosenAt: (/* @__PURE__ */ new Date()).toISOString() };
+  const path = cursorApiKeyPath();
+  atomicWrite(path, jsYaml.dump(config2));
+  try {
+    chmodSync(path, 384);
+  } catch {
+  }
+  return config2;
+}
 function heuristicMode(options) {
-  if (options.subscription.present && !options.apiKey.present) return "subscription";
+  if (options.subscription.present && !options.apiKey.present && !options.cursorSdk?.present) return "subscription";
+  if (options.cursorSdk?.present && !options.apiKey.present && !options.subscription.present) return "cursor_sdk";
   return "api_key";
 }
 function resolveAuthMode() {
@@ -5503,12 +5669,14 @@ function resolveAuthMode() {
   if (saved) return saved.mode;
   return heuristicMode(detectAuthOptions());
 }
+var VALID_AUTH_MODES;
 var init_auth_config = __esm({
   "src/utils/auth-config.ts"() {
     "use strict";
     init_js_yaml();
     init_engine();
     init_auth_detect();
+    VALID_AUTH_MODES = ["subscription", "api_key", "cursor_sdk"];
   }
 });
 
@@ -5519,7 +5687,8 @@ __export(agent_options_exports, {
   buildAgentEnv: () => buildAgentEnv,
   buildAgentQueryOptions: () => buildAgentQueryOptions,
   claudePathForSdk: () => claudePathForSdk,
-  findClaudePath: () => findClaudePath
+  findClaudePath: () => findClaudePath,
+  mapClaudeToolsToCursor: () => mapClaudeToolsToCursor
 });
 import { execSync as execSync2 } from "node:child_process";
 import { existsSync as existsSync5, readdirSync as readdirSync8 } from "node:fs";
@@ -5610,10 +5779,41 @@ function buildAgentEnv() {
     AXME_TELEMETRY_DISABLED: "1",
     AXME_SKIP_HOOKS: "1"
   };
-  if (resolveAuthMode() === "subscription") {
+  const mode = resolveAuthMode();
+  if (mode === "subscription") {
+    delete env.ANTHROPIC_API_KEY;
+  }
+  if (mode === "cursor_sdk") {
+    if (!env.CURSOR_API_KEY) {
+      const fileKey = loadCursorApiKey();
+      if (fileKey) env.CURSOR_API_KEY = fileKey;
+    }
     delete env.ANTHROPIC_API_KEY;
   }
   return env;
+}
+function mapClaudeToolsToCursor(tools) {
+  const mapping = {
+    Read: "Read",
+    Glob: "Glob",
+    Grep: "Grep",
+    Edit: "Edit",
+    Write: "Write",
+    Bash: "Shell",
+    NotebookEdit: null,
+    Agent: null,
+    Skill: null,
+    TodoWrite: null,
+    WebFetch: null,
+    WebSearch: null,
+    ToolSearch: null
+  };
+  const out = /* @__PURE__ */ new Set();
+  for (const t of tools) {
+    const mapped = mapping[t];
+    if (mapped) out.add(mapped);
+  }
+  return [...out];
 }
 function buildAgentQueryOptions(base, role) {
   const tools = ROLE_TOOLS[role];
@@ -5667,21 +5867,324 @@ var init_agent_options = __esm({
   }
 });
 
+// src/utils/ide-detect.ts
+var ide_detect_exports = {};
+__export(ide_detect_exports, {
+  detectIdeFromEnv: () => detectIdeFromEnv,
+  detectIdeFromHookStdin: () => detectIdeFromHookStdin,
+  parseIdeFlag: () => parseIdeFlag,
+  resolveIde: () => resolveIde
+});
+function parseIdeFlag(args2) {
+  for (let i = 0; i < args2.length; i++) {
+    const a = args2[i];
+    if (a === "--ide" && i + 1 < args2.length) {
+      const v = args2[i + 1];
+      if (IDE_VALUES.includes(v)) return v;
+    } else if (a.startsWith("--ide=")) {
+      const v = a.slice("--ide=".length);
+      if (IDE_VALUES.includes(v)) return v;
+    }
+  }
+  return void 0;
+}
+function detectIdeFromEnv(env = process.env) {
+  const v = env.AXME_IDE;
+  if (v && IDE_VALUES.includes(v)) return v;
+  return void 0;
+}
+function detectIdeFromHookStdin(raw) {
+  if (!raw || typeof raw !== "object") return void 0;
+  const obj = raw;
+  if (typeof obj.cursor_version === "string") return "cursor";
+  if (Array.isArray(obj.workspace_roots)) return "cursor";
+  return void 0;
+}
+function resolveIde(args2, hookRaw, env = process.env) {
+  return parseIdeFlag(args2) ?? detectIdeFromEnv(env) ?? detectIdeFromHookStdin(hookRaw) ?? "claude-code";
+}
+var IDE_VALUES;
+var init_ide_detect = __esm({
+  "src/utils/ide-detect.ts"() {
+    "use strict";
+    IDE_VALUES = ["claude-code", "cursor"];
+  }
+});
+
+// src/utils/agent-sdk-cursor.ts
+var agent_sdk_cursor_exports = {};
+__export(agent_sdk_cursor_exports, {
+  createCursorAgentSdk: () => createCursorAgentSdk
+});
+function resolveSystemPrompt(q) {
+  const sp = q.options.systemPrompt;
+  if (sp === void 0) return "";
+  if (typeof sp === "string") return sp;
+  if (Array.isArray(sp)) return sp.join("\n\n");
+  return sp.append ?? "";
+}
+function buildWrappedPrompt(q) {
+  const systemPrompt = resolveSystemPrompt(q);
+  if (!systemPrompt.trim()) return q.prompt;
+  return `<system>
+${systemPrompt}
+</system>
+
+${q.prompt}`;
+}
+function translateCursorEvent(ev) {
+  if (!ev || typeof ev !== "object") return null;
+  const e = ev;
+  const t = e.type;
+  if (t === "assistant") {
+    const msg = e.message;
+    const content = Array.isArray(msg?.content) ? msg.content : [];
+    return {
+      type: "assistant",
+      message: { role: "assistant", content }
+    };
+  }
+  if (t === "thinking") {
+    const thinking = typeof e.thinking === "string" ? e.thinking : "";
+    return {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "thinking", thinking }]
+      }
+    };
+  }
+  return null;
+}
+async function createCursorAgentSdk(_role, factoryOpts) {
+  const apiKey = process.env.CURSOR_API_KEY ?? loadCursorApiKey();
+  if (!apiKey || !apiKey.trim()) {
+    throw new Error(
+      "CURSOR_API_KEY not configured. Run `axme-code setup --ide=cursor` to save one, or export CURSOR_API_KEY in the environment."
+    );
+  }
+  const cursorMod = await import("@cursor/sdk");
+  return {
+    ide: "cursor",
+    async *query(q) {
+      const cwd = factoryOpts?.cwd ?? q.options.cwd ?? process.cwd();
+      const modelId = q.options.model ?? "composer-2";
+      const agent = await cursorMod.Agent.create({
+        apiKey,
+        model: { id: modelId },
+        local: { cwd, settingSources: [], mcpServers: [] },
+        // Cursor SDK stores agents in a local SQLite with UNIQUE(agent_id);
+        // multiple scanner-role calls in one setup would all reuse
+        // "axme-scanner" and fail with SQLITE_CONSTRAINT. Append a per-call
+        // suffix so each agent.create gets a fresh row.
+        agentId: `axme-${_role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      });
+      let accumulatedText = "";
+      let lastUsage;
+      let runStatus;
+      try {
+        const run = await agent.send(buildWrappedPrompt(q));
+        for await (const ev of run.stream()) {
+          const translated = translateCursorEvent(ev);
+          if (!translated) continue;
+          const msg = translated.message;
+          if (translated.type === "assistant" && msg) {
+            for (const block of msg.content) {
+              if (block.type === "text" && block.text) accumulatedText += block.text;
+            }
+          }
+          yield translated;
+        }
+        if (run.wait) {
+          try {
+            const result = await run.wait();
+            runStatus = result.status;
+            lastUsage = result.usage;
+          } catch {
+          }
+        }
+      } finally {
+        try {
+          await agent.dispose?.();
+        } catch {
+        }
+      }
+      yield {
+        type: "result",
+        subtype: runStatus === "completed" ? "success" : "error",
+        result: accumulatedText,
+        ...lastUsage ? { usage: lastUsage } : {}
+      };
+    }
+  };
+}
+var init_agent_sdk_cursor = __esm({
+  "src/utils/agent-sdk-cursor.ts"() {
+    "use strict";
+    init_auth_config();
+  }
+});
+
+// src/utils/agent-sdk-claude.ts
+var agent_sdk_claude_exports = {};
+__export(agent_sdk_claude_exports, {
+  createClaudeAgentSdk: () => createClaudeAgentSdk
+});
+function createClaudeAgentSdk(_role) {
+  return {
+    ide: "claude-code",
+    async *query(q) {
+      const sdk = await import("@anthropic-ai/claude-agent-sdk");
+      const stream = sdk.query({
+        prompt: q.prompt,
+        options: q.options
+      });
+      for await (const msg of stream) {
+        yield msg;
+      }
+    }
+  };
+}
+var init_agent_sdk_claude = __esm({
+  "src/utils/agent-sdk-claude.ts"() {
+    "use strict";
+  }
+});
+
+// src/utils/agent-sdk.ts
+function authImpliedIde() {
+  try {
+    const mode = resolveAuthMode();
+    if (mode === "cursor_sdk") return "cursor";
+    if (mode === "subscription" || mode === "api_key") return "claude-code";
+  } catch {
+  }
+  return void 0;
+}
+function selectIde(opts) {
+  return opts?.preferredIde ?? detectIdeFromEnv() ?? authImpliedIde() ?? "claude-code";
+}
+async function createAgentSdk(role, opts) {
+  const ide = selectIde(opts);
+  if (ide === "cursor") {
+    if (process.platform === "win32" && process.arch === "arm64") {
+      logFallback("@cursor/sdk has no win-arm64 native binary");
+      return await createClaudeFallback(role);
+    }
+    try {
+      const { createCursorAgentSdk: createCursorAgentSdk2 } = await Promise.resolve().then(() => (init_agent_sdk_cursor(), agent_sdk_cursor_exports));
+      const cursor = await createCursorAgentSdk2(role, opts);
+      return cursor;
+    } catch (err) {
+      logFallback(`@cursor/sdk import failed: ${err.message}`);
+      return await createClaudeFallback(role);
+    }
+  }
+  return await createClaudeFallback(role);
+}
+function logFallback(reason) {
+  if (process.env.AXME_VERBOSE_FALLBACK) {
+    process.stderr.write(`AXME: routing through Claude SDK (${reason})
+`);
+  }
+}
+async function createClaudeFallback(role) {
+  const haveBinary = !!findClaudePath();
+  const haveKey = !!process.env.ANTHROPIC_API_KEY;
+  if (!haveBinary && !haveKey) {
+    throw new AgentSdkUnavailableError(
+      "No usable LLM backend. Install @cursor/sdk + set CURSOR_API_KEY (Cursor users), or install `claude` and run `claude /login` (subscription users), or set ANTHROPIC_API_KEY (API users)."
+    );
+  }
+  const { createClaudeAgentSdk: createClaudeAgentSdk2 } = await Promise.resolve().then(() => (init_agent_sdk_claude(), agent_sdk_claude_exports));
+  return createClaudeAgentSdk2(role);
+}
+var AgentSdkUnavailableError;
+var init_agent_sdk = __esm({
+  "src/utils/agent-sdk.ts"() {
+    "use strict";
+    init_auth_config();
+    init_agent_options();
+    init_ide_detect();
+    AgentSdkUnavailableError = class extends Error {
+      constructor(message) {
+        super(message);
+        this.name = "AgentSdkUnavailableError";
+      }
+    };
+  }
+});
+
+// src/agents/scanners/_scope.ts
+function buildScopeConstraint(projectPath, opts = {}) {
+  const allowMemory = opts.allowAutoMemoryRead === true;
+  const encoded = projectPath.replace(/[^a-zA-Z0-9]/g, "-");
+  const memoryClause = allowMemory ? `   - EXCEPTION: you MAY read \`~/.claude/projects/${encoded}/memory/\` and its contents (this is the auto-memory store for THIS project; reading it is required).
+` : "";
+  return `## Scope boundary (read first \u2014 do not violate)
+
+You are scanning a SINGLE project rooted at:
+
+  ${projectPath}
+
+You MUST keep every Read / Glob / Grep / Bash tool call strictly inside that directory tree.
+
+- All file paths in your tool calls must be either relative paths that resolve inside ${projectPath} or absolute paths that start with that prefix.
+- Do NOT use \`..\` to escape upward.
+- Do NOT read or list any file in the parent of ${projectPath}, or in sibling directories, or in any unrelated location on the filesystem.
+- Do NOT cd / chdir / pushd to anywhere outside ${projectPath}.
+- If the \`claude_code\` system prompt mentions parent CLAUDE.md, repo siblings, or workspace-level files, IGNORE them. The user has explicitly asked you to confine analysis to ${projectPath}.
+- If you encounter a symlink that points outside ${projectPath}, do not follow it.
+
+${memoryClause}## Sensitive paths \u2014 never read, never include
+
+The following locations frequently contain plaintext secrets (API keys, passwords, tokens, private keys, cloud credentials). They may exist inside ${projectPath} regardless of the project's \`.gitignore\`. You MUST NOT Read, Glob, Grep, or cat these \u2014 and if you incidentally see their contents in any other tool's output, you MUST NOT echo, summarise, paraphrase, or include those contents in your final report.
+
+Directory names (anywhere in the tree):
+- \`credentials/\`, \`secrets/\`, \`keys/\`, \`certs/\`, \`private/\`
+- \`.aws/\`, \`.ssh/\`, \`.gnupg/\`, \`.docker/\`
+- \`.kube/\` (kubeconfig leaks cluster admin creds)
+
+File patterns (anywhere in the tree):
+- \`.env\`, \`.env.*\` (including \`.env.local\`, \`.env.production\`, etc.) \u2014 note \`.env.example\` / \`.env.template\` ARE safe to read, only the populated variants are sensitive
+- \`*.pem\`, \`*.key\`, \`*.p12\`, \`*.pfx\`, \`*.jks\`, \`*.keystore\` \u2014 TLS / PKCS / Java keystore material
+- \`id_rsa\`, \`id_dsa\`, \`id_ecdsa\`, \`id_ed25519\` (with or without \`.pub\` \u2014 though \`.pub\` files are technically safe, treat the whole family as off-limits)
+- \`service-account*.json\`, \`gcp-key*.json\`, \`firebase-adminsdk*.json\` \u2014 GCP / Firebase service account keys
+- \`.npmrc\`, \`.pypirc\`, \`.netrc\`, \`.pgpass\`, \`.git-credentials\` \u2014 package-registry / DB / git credential files
+- \`secrets.yml\`, \`secrets.yaml\`, \`secret-*.json\`, \`config/master.key\` (Rails) \u2014 common explicit secret files
+
+What you SHOULD still do:
+- Note the EXISTENCE of these files (e.g. "project uses .env for configuration" or "AWS credentials present at .aws/credentials") in STACK / safety output \u2014 existence is useful context, contents are not.
+- Read \`.gitignore\` itself to see what the project considers sensitive; if you see additional secret-like patterns there beyond this list, treat those paths as sensitive too.
+- Read \`.env.example\` / \`.env.template\` / \`.env.sample\` \u2014 these document required env vars without populated values.
+
+If asked to fill out a STACK / DEPENDENCIES / SECURITY section that references credentials, write "uses [service X] \u2014 credentials provisioned via .env / .aws / etc." and stop. Do NOT include the actual values.
+
+---
+
+`;
+}
+var init_scope = __esm({
+  "src/agents/scanners/_scope.ts"() {
+    "use strict";
+  }
+});
+
 // src/agents/scanners/oracle.ts
-var oracle_exports = {};
-__export(oracle_exports, {
+var oracle_exports2 = {};
+__export(oracle_exports2, {
   parseOracleOutput: () => parseOracleOutput,
   runOracleScan: () => runOracleScan
 });
 async function runOracleScan(opts) {
-  const sdk = await import("@anthropic-ai/claude-agent-sdk");
+  const sdk = await createAgentSdk("scanner", { cwd: opts.projectPath });
   const startTime = Date.now();
   const model = opts.model ?? "claude-sonnet-4-6";
   const queryOpts = buildAgentQueryOptions(
     { cwd: opts.projectPath, model },
     "scanner"
   );
-  let prompt = ORACLE_SCAN_PROMPT;
+  let prompt = buildScopeConstraint(opts.projectPath, { allowAutoMemoryRead: true }) + ORACLE_SCAN_PROMPT;
   if (opts.workspaceMode) {
     prompt += `
 
@@ -5758,6 +6261,8 @@ var init_oracle2 = __esm({
     "use strict";
     init_cost_extractor();
     init_agent_options();
+    init_agent_sdk();
+    init_scope();
     ORACLE_SCAN_PROMPT = `You are a project analyst. Your job is to scan this codebase and produce a comprehensive knowledge base.
 
 ## Instructions
@@ -5861,14 +6366,14 @@ __export(decision_exports, {
   runDecisionScan: () => runDecisionScan
 });
 async function runDecisionScan(opts) {
-  const sdk = await import("@anthropic-ai/claude-agent-sdk");
+  const sdk = await createAgentSdk("scanner", { cwd: opts.projectPath });
   const startTime = Date.now();
   const model = opts.model ?? "claude-sonnet-4-6";
   const queryOpts = buildAgentQueryOptions(
     { cwd: opts.projectPath, model },
     "scanner"
   );
-  let prompt = DECISION_SCAN_PROMPT;
+  let prompt = buildScopeConstraint(opts.projectPath) + DECISION_SCAN_PROMPT;
   if (opts.existingDecisions && opts.existingDecisions.length > 0) {
     const list = opts.existingDecisions.map(
       (d) => `- ${d.id}: ${d.title} [${d.enforce ?? "info"}] \u2014 ${d.decision}`
@@ -5946,7 +6451,9 @@ var init_decision = __esm({
     "use strict";
     init_cost_extractor();
     init_agent_options();
+    init_agent_sdk();
     init_decisions();
+    init_scope();
     DECISION_SCAN_PROMPT = `You are a project analyst. Your job is to extract architectural and design decisions from this codebase.
 
 ## Instructions
@@ -6035,14 +6542,15 @@ __export(safety_exports2, {
   runSafetyScan: () => runSafetyScan
 });
 async function runSafetyScan(opts) {
-  const sdk = await import("@anthropic-ai/claude-agent-sdk");
+  const sdk = await createAgentSdk("scanner", { cwd: opts.projectPath });
   const startTime = Date.now();
   const model = opts.model ?? "claude-haiku-4-5";
   const queryOpts = buildAgentQueryOptions(
     { cwd: opts.projectPath, model },
     "scanner"
   );
-  const q = sdk.query({ prompt: SAFETY_SCAN_PROMPT, options: queryOpts });
+  const prompt = buildScopeConstraint(opts.projectPath) + SAFETY_SCAN_PROMPT;
+  const q = sdk.query({ prompt, options: queryOpts });
   let result = "";
   let cost;
   for await (const msg of q) {
@@ -6103,6 +6611,8 @@ var init_safety2 = __esm({
     "use strict";
     init_cost_extractor();
     init_agent_options();
+    init_agent_sdk();
+    init_scope();
     SAFETY_SCAN_PROMPT = `You are a safety analyst. Your job is to scan this project's CI/CD configs and development tooling to extract safety rules.
 
 ## Instructions
@@ -6183,14 +6693,15 @@ __export(deploy_exports, {
   runDeployScan: () => runDeployScan
 });
 async function runDeployScan(opts) {
-  const sdk = await import("@anthropic-ai/claude-agent-sdk");
+  const sdk = await createAgentSdk("scanner", { cwd: opts.projectPath });
   const startTime = Date.now();
   const model = opts.model ?? "claude-haiku-4-5";
   const queryOpts = buildAgentQueryOptions(
     { cwd: opts.projectPath, model },
     "scanner"
   );
-  const q = sdk.query({ prompt: DEPLOY_SCAN_PROMPT, options: queryOpts });
+  const prompt = buildScopeConstraint(opts.projectPath) + DEPLOY_SCAN_PROMPT;
+  const q = sdk.query({ prompt, options: queryOpts });
   let result = "";
   let cost;
   for await (const msg of q) {
@@ -6245,6 +6756,8 @@ var init_deploy = __esm({
     "use strict";
     init_cost_extractor();
     init_agent_options();
+    init_agent_sdk();
+    init_scope();
     DEPLOY_SCAN_PROMPT = `You are a deploy safety analyst. Your job is to scan this project's deployment configuration and propose pre-deploy checklist items.
 
 ## Instructions
@@ -6325,14 +6838,15 @@ function detectWorkspace(cwd) {
   return enrichWithGitRepos(root, result);
 }
 function enrichWithGitRepos(root, ws) {
-  const knownPaths = new Set(ws.projects.map((p) => p.path.replace(/^\.\/?/, "")));
+  const stripDotPrefix = (p) => p.replace(/^\.[\\/]?/, "");
+  const knownPaths = new Set(ws.projects.map((p) => stripDotPrefix(p.path)));
   const newProjects = [...ws.projects];
   for (const entry of safeReaddir(root)) {
     if (entry.startsWith(".") || ["node_modules", "dist", "build", ".git"].includes(entry)) continue;
-    const normalized = entry.replace(/^\.\/?/, "");
+    const normalized = stripDotPrefix(entry);
     if (knownPaths.has(normalized)) continue;
     const entryPath = join15(root, entry);
-    if (isDir(entryPath) && existsSync6(join15(entryPath, ".git"))) {
+    if (isDir2(entryPath) && existsSync6(join15(entryPath, ".git"))) {
       newProjects.push({ path: normalized, name: normalized });
       knownPaths.add(normalized);
     }
@@ -6488,7 +7002,7 @@ function detectNx(root) {
   for (const entry of safeReaddir(root)) {
     if (entry.startsWith(".") || ["node_modules", "dist", "build"].includes(entry)) continue;
     const entryPath = join15(root, entry);
-    if (isDir(entryPath) && existsSync6(join15(entryPath, "project.json")) && !projects.some((p) => p.path === entry)) {
+    if (isDir2(entryPath) && existsSync6(join15(entryPath, "project.json")) && !projects.some((p) => p.path === entry)) {
       projects.push({ path: entry, name: entry });
     }
   }
@@ -6563,7 +7077,7 @@ function detectMultiGit(root) {
   for (const entry of safeReaddir(root)) {
     if (entry.startsWith(".") || ["node_modules", "dist", "build", ".git"].includes(entry)) continue;
     const entryPath = join15(root, entry);
-    if (isDir(entryPath) && existsSync6(join15(entryPath, ".git"))) {
+    if (isDir2(entryPath) && existsSync6(join15(entryPath, ".git"))) {
       projects.push({ path: entry, name: entry });
     }
   }
@@ -6577,7 +7091,7 @@ function safeReaddir(dir) {
     return [];
   }
 }
-function isDir(path) {
+function isDir2(path) {
   try {
     return statSync4(path).isDirectory();
   } catch {
@@ -6587,13 +7101,13 @@ function isDir(path) {
 function resolveGlobs(root, globs) {
   const projects = [];
   for (const glob of globs) {
-    if (glob.endsWith("/*") || glob.endsWith("/**")) {
-      const dir = glob.replace(/\/\*\*?$/, "");
+    if (glob.endsWith("/*") || glob.endsWith("/**") || glob.endsWith("\\*") || glob.endsWith("\\**")) {
+      const dir = glob.replace(/[\\/]\*\*?$/, "");
       const fullDir = join15(root, dir);
       if (!existsSync6(fullDir)) continue;
       for (const entry of safeReaddir(fullDir)) {
         const entryPath = join15(fullDir, entry);
-        if (!isDir(entryPath)) continue;
+        if (!isDir2(entryPath)) continue;
         if (existsSync6(join15(entryPath, "package.json"))) {
           const path = join15(dir, entry);
           if (!projects.some((p) => p.path === path)) {
@@ -6603,7 +7117,7 @@ function resolveGlobs(root, globs) {
       }
     } else {
       const fullPath = join15(root, glob);
-      if (existsSync6(fullPath) && isDir(fullPath)) {
+      if (existsSync6(fullPath) && isDir2(fullPath)) {
         if (!projects.some((p) => p.path === glob)) {
           projects.push({ path: glob, name: basename4(glob) });
         }
@@ -6669,6 +7183,105 @@ var init_status = __esm({
   }
 });
 
+// src/utils/auth-prompt.ts
+var auth_prompt_exports = {};
+__export(auth_prompt_exports, {
+  formatDetectionBlock: () => formatDetectionBlock,
+  hasAnyAuth: () => hasAnyAuth,
+  promptAuthChoice: () => promptAuthChoice,
+  promptCursorApiKey: () => promptCursorApiKey
+});
+import { createInterface } from "node:readline";
+function formatDetectionBlock(options) {
+  const lines = [];
+  lines.push("Detected on this machine:");
+  if (options.apiKey.present) {
+    lines.push(`  [1] Anthropic API key: ${options.apiKey.masked} (ANTHROPIC_API_KEY)`);
+  } else {
+    lines.push("  [1] Anthropic API key \u2014 not set");
+  }
+  if (options.subscription.present) {
+    const detail = options.subscription.details ? ` (${options.subscription.details})` : "";
+    lines.push(`  [2] Claude Code subscription${detail}`);
+  } else if (options.subscription.binaryFound) {
+    lines.push("  [2] Claude Code subscription \u2014 binary found but no saved login");
+    lines.push("      (run `claude` then `/login` to authenticate)");
+  } else {
+    lines.push("  [2] Claude Code subscription \u2014 claude binary not found on PATH");
+  }
+  if (options.cursorSdk?.present) {
+    const detail = options.cursorSdk.details ? ` (${options.cursorSdk.details})` : "";
+    lines.push(`  [3] Cursor SDK API key: ${options.cursorSdk.masked}${detail}`);
+  } else {
+    lines.push("  [3] Cursor SDK API key \u2014 not set (generate at cursor.com \u2192 Integrations)");
+  }
+  return lines.join("\n");
+}
+function defaultChoice(options) {
+  const haveSub = options.subscription.present;
+  const haveKey = options.apiKey.present;
+  const haveCursor = options.cursorSdk?.present === true;
+  const count = (haveSub ? 1 : 0) + (haveKey ? 1 : 0) + (haveCursor ? 1 : 0);
+  if (count === 1) {
+    if (haveSub) return "subscription";
+    if (haveKey) return "api_key";
+    if (haveCursor) return "cursor_sdk";
+  }
+  if (haveSub) return "subscription";
+  if (haveKey) return "api_key";
+  if (haveCursor) return "cursor_sdk";
+  return "api_key";
+}
+function hasAnyAuth(options) {
+  return options.apiKey.present || options.subscription.present || options.cursorSdk?.present === true;
+}
+async function promptAuthChoice(options) {
+  const def = defaultChoice(options);
+  const defLabel = def === "subscription" ? "2" : def === "cursor_sdk" ? "3" : "1";
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    while (true) {
+      const answer = await new Promise((resolve9) => {
+        rl.question(`Which should axme-code use? [1=api_key, 2=subscription, 3=cursor_sdk, default ${defLabel}]: `, resolve9);
+      });
+      const trimmed = answer.trim().toLowerCase();
+      if (trimmed === "") return def;
+      if (trimmed === "1" || trimmed === "api_key" || trimmed === "key") return "api_key";
+      if (trimmed === "2" || trimmed === "subscription" || trimmed === "sub") return "subscription";
+      if (trimmed === "3" || trimmed === "cursor_sdk" || trimmed === "cursor") return "cursor_sdk";
+      if (trimmed === "q" || trimmed === "quit" || trimmed === "cancel") return null;
+      process.stdout.write("  Enter 1, 2, 3, or q to cancel.\n");
+    }
+  } finally {
+    rl.close();
+  }
+}
+async function promptCursorApiKey() {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    while (true) {
+      const answer = await new Promise((resolve9) => {
+        rl.question("Paste your Cursor SDK API key (or 'q' to cancel): ", resolve9);
+      });
+      const trimmed = answer.trim();
+      if (!trimmed) continue;
+      if (trimmed === "q" || trimmed === "quit" || trimmed === "cancel") return null;
+      if (trimmed.length < 20 || /\s/.test(trimmed)) {
+        process.stdout.write("  That doesn't look like a valid API key. Try again or 'q' to cancel.\n");
+        continue;
+      }
+      return trimmed;
+    }
+  } finally {
+    rl.close();
+  }
+}
+var init_auth_prompt = __esm({
+  "src/utils/auth-prompt.ts"() {
+    "use strict";
+  }
+});
+
 // src/telemetry.ts
 var telemetry_exports = {};
 __export(telemetry_exports, {
@@ -6697,7 +7310,7 @@ import {
   mkdirSync as mkdirSync2,
   appendFileSync as appendFileSync2,
   unlinkSync as unlinkSync4,
-  chmodSync
+  chmodSync as chmodSync2
 } from "node:fs";
 import { randomBytes } from "node:crypto";
 function getStateDir() {
@@ -6742,7 +7355,7 @@ function getOrCreateMid() {
       mkdirSync2(getStateDir(), { recursive: true });
       writeFileSync3(getMidFile(), newMid, "utf-8");
       try {
-        chmodSync(getMidFile(), 384);
+        chmodSync2(getMidFile(), 384);
       } catch {
       }
     } catch {
@@ -6953,6 +7566,432 @@ var init_telemetry = __esm({
     cachedMid = null;
     processStartupSent = false;
     cachedSource = null;
+  }
+});
+
+// src/setup/cursor-writers.ts
+var cursor_writers_exports = {};
+__export(cursor_writers_exports, {
+  writeCursorHooksJson: () => writeCursorHooksJson,
+  writeCursorMcpJson: () => writeCursorMcpJson,
+  writeCursorRulesMdc: () => writeCursorRulesMdc
+});
+import { existsSync as existsSync9, mkdirSync as mkdirSync3, readFileSync as readFileSync13, writeFileSync as writeFileSync4 } from "node:fs";
+import { dirname as dirname5, join as join19 } from "node:path";
+function readJsonOr(path, fallback) {
+  if (!existsSync9(path)) return fallback;
+  try {
+    return JSON.parse(readFileSync13(path, "utf-8"));
+  } catch {
+    return fallback;
+  }
+}
+function writeJsonAtomic(path, value) {
+  mkdirSync3(dirname5(path), { recursive: true });
+  writeFileSync4(path, JSON.stringify(value, null, 2) + "\n", "utf-8");
+}
+function writeCursorMcpJson(projectPath) {
+  const path = join19(projectPath, ".cursor", "mcp.json");
+  const cfg = readJsonOr(path, {});
+  if (!cfg.mcpServers) cfg.mcpServers = {};
+  cfg.mcpServers.axme = { command: "axme-code", args: ["serve"] };
+  writeJsonAtomic(path, cfg);
+}
+function writeCursorHooksJson(projectPath, buildHookCommand2) {
+  const path = join19(projectPath, ".cursor", "hooks.json");
+  const cfg = readJsonOr(path, { version: 1 });
+  if (!cfg.version) cfg.version = 1;
+  if (!cfg.hooks) cfg.hooks = {};
+  const hookKinds = ["preToolUse", "postToolUse", "sessionEnd"];
+  const cliHookNames = {
+    preToolUse: "pre-tool-use",
+    postToolUse: "post-tool-use",
+    sessionEnd: "session-end"
+  };
+  for (const kind of hookKinds) {
+    const existing = cfg.hooks[kind] ?? [];
+    const preserved = existing.filter((e) => !String(e.command ?? "").includes("axme-code"));
+    const fresh = {
+      command: `${buildHookCommand2(cliHookNames[kind], projectPath)} --ide cursor`,
+      type: "command",
+      timeout: HOOK_TIMEOUT_MS[kind]
+    };
+    cfg.hooks[kind] = [...preserved, fresh];
+  }
+  writeJsonAtomic(path, cfg);
+}
+function writeCursorRulesMdc(projectPath, _isWorkspace) {
+  const path = join19(projectPath, ".cursor", "rules", "axme-code.mdc");
+  mkdirSync3(dirname5(path), { recursive: true });
+  writeFileSync4(path, RULE_FRONTMATTER + "\n" + RULE_BODY, "utf-8");
+}
+var HOOK_TIMEOUT_MS, RULE_FRONTMATTER, RULE_BODY;
+var init_cursor_writers = __esm({
+  "src/setup/cursor-writers.ts"() {
+    "use strict";
+    HOOK_TIMEOUT_MS = {
+      preToolUse: 5,
+      postToolUse: 10,
+      sessionEnd: 120
+    };
+    RULE_FRONTMATTER = `---
+name: axme-code
+description: AXME Code session start ritual + safety reminders for Cursor
+alwaysApply: true
+---
+`;
+    RULE_BODY = `## AXME Code
+
+### Session Start (MANDATORY)
+Call \`axme_context\` tool with this project's path at the start of every Cursor session.
+This loads: oracle, decisions, safety rules, memories, test plan, active plans.
+Do NOT skip \u2014 without context you will miss critical project rules.
+
+### NEVER run \`axme-code setup\` yourself
+Setup is the user's job. The Cursor extension offers a "Run setup?" toast on
+first activation; the user can also run \`AXME: Setup\` from the Command
+Palette. **Do not invoke \`axme-code setup\` via Bash autonomously**, even if
+\`axme_context\` returns "not initialized" \u2014 just relay the message to the
+user and wait.
+
+### During Work
+- Error pattern or successful approach discovered \u2192 call \`axme_save_memory\` immediately.
+- Architectural decision made or discovered \u2192 call \`axme_save_decision\` immediately.
+- New safety constraint found \u2192 call \`axme_update_safety\` immediately.
+
+### Git commit/push gate
+Every \`git commit\` and \`git push\` command MUST end with the marker:
+\`\`\`
+#!axme pr=<NUMBER|none> repo=<OWNER/REPO>
+\`\`\`
+Without this suffix the pre-tool-use hook blocks the command.
+
+### Available AXME tools
+\`axme_context\`, \`axme_save_memory\`, \`axme_save_decision\`, \`axme_update_safety\`,
+\`axme_safety\`, \`axme_status\`, \`axme_worklog\`, \`axme_workspace\`,
+\`axme_oracle\`, \`axme_decisions\`, \`axme_memories\`.
+`;
+  }
+});
+
+// src/storage/embeddings.ts
+var embeddings_exports = {};
+__export(embeddings_exports, {
+  EMBED_DIMENSION: () => EMBED_DIMENSION,
+  _resetEmbedderCache: () => _resetEmbedderCache,
+  cosine: () => cosine,
+  embedKbEntry: () => embedKbEntry,
+  isRuntimeInstalled: () => isRuntimeInstalled,
+  isStale: () => isStale,
+  loadEmbedder: () => loadEmbedder,
+  loadEmbeddings: () => loadEmbeddings,
+  removeEmbedding: () => removeEmbedding,
+  runtimeDir: () => runtimeDir,
+  saveEmbeddings: () => saveEmbeddings,
+  topK: () => topK,
+  upsertEmbedding: () => upsertEmbedding
+});
+import { createRequire } from "node:module";
+import { existsSync as existsSync10, statSync as statSync5 } from "node:fs";
+import { homedir as homedir6 } from "node:os";
+import { join as join20 } from "node:path";
+import { pathToFileURL } from "node:url";
+function indexDir(projectPath) {
+  return join20(projectPath, ".axme-code", INDEX_DIRNAME);
+}
+function embeddingsPath(projectPath) {
+  return join20(indexDir(projectPath), EMBEDDINGS_FILENAME);
+}
+function runtimeDir() {
+  return RUNTIME_DIR;
+}
+function isRuntimeInstalled() {
+  return existsSync10(join20(RUNTIME_DIR, "node_modules", "@huggingface", "transformers"));
+}
+async function loadEmbedder() {
+  if (_cachedEmbedder) return _cachedEmbedder;
+  if (!isRuntimeInstalled()) return null;
+  const runtimeRequire = createRequire(join20(RUNTIME_DIR, "node_modules", ".package-lock.json"));
+  let mod;
+  try {
+    const requirePath = runtimeRequire.resolve("@huggingface/transformers");
+    mod = await import(pathToFileURL(requirePath).href);
+  } catch (e) {
+    const msg = e?.message ?? String(e);
+    if (process.platform === "win32" && /could not be found|onnxruntime_binding\.node/i.test(msg)) {
+      process.stderr.write(
+        `AXME: failed to load semantic-search runtime. The most common cause on Windows is
+      a missing Microsoft Visual C++ Redistributable (required by onnxruntime-node).
+      Install from https://aka.ms/vs/17/release/vc_redist.x64.exe and retry
+      \`axme-code config set context.mode search\` (or \`axme-code reindex\`).
+      Underlying error: ${msg}
+`
+      );
+    } else {
+      process.stderr.write(`AXME: failed to load semantic-search runtime: ${msg}
+`);
+    }
+    return null;
+  }
+  const pipe2 = await mod.pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2", {
+    dtype: "fp32"
+  });
+  async function embed(text) {
+    const result = await pipe2(text, { pooling: "mean", normalize: true });
+    return new Float32Array(result.data);
+  }
+  _cachedEmbedder = { embed, dimension: EMBED_DIMENSION };
+  return _cachedEmbedder;
+}
+function _resetEmbedderCache() {
+  _cachedEmbedder = null;
+}
+function cosine(a, b) {
+  let s = 0;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) s += a[i] * b[i];
+  return s;
+}
+function loadEmbeddings(projectPath) {
+  const raw = readSafe(embeddingsPath(projectPath));
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed;
+  } catch {
+    return [];
+  }
+}
+function saveEmbeddings(projectPath, records) {
+  _writeQueue = _writeQueue.then(() => {
+    ensureDir(indexDir(projectPath));
+    const json3 = JSON.stringify(records);
+    atomicWrite(embeddingsPath(projectPath), json3);
+  }).catch(() => {
+  });
+  return _writeQueue;
+}
+function isStale(record3, mdPath) {
+  if (!existsSync10(mdPath)) return true;
+  return statSync5(mdPath).mtimeMs > record3.mtime;
+}
+function topK(records, qvec, k, type2) {
+  const filtered = type2 ? records.filter((r) => r.type === type2) : records;
+  const scored = filtered.map((r) => ({
+    slug: r.slug,
+    type: r.type,
+    title: r.title,
+    description: r.description,
+    score: cosine(qvec, r.embedding)
+  }));
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, Math.min(k, scored.length));
+}
+async function upsertEmbedding(projectPath, embedder, record3, text) {
+  const vec = await embedder.embed(text);
+  const records = loadEmbeddings(projectPath);
+  const idx = records.findIndex((r) => r.slug === record3.slug && r.type === record3.type);
+  const next = { ...record3, embedding: Array.from(vec) };
+  if (idx >= 0) records[idx] = next;
+  else records.push(next);
+  await saveEmbeddings(projectPath, records);
+  return true;
+}
+async function removeEmbedding(projectPath, slug, type2) {
+  const records = loadEmbeddings(projectPath);
+  const next = records.filter((r) => !(r.slug === slug && r.type === type2));
+  if (next.length === records.length) return;
+  await saveEmbeddings(projectPath, next);
+}
+async function embedKbEntry(projectPath, slug, type2, title, description, contextMode) {
+  if (contextMode !== "search") return;
+  try {
+    const embedder = await loadEmbedder();
+    if (!embedder) return;
+    const text = `${title}. ${description}`;
+    await upsertEmbedding(
+      projectPath,
+      embedder,
+      { slug, type: type2, title, description, mtime: Date.now() },
+      text
+    );
+  } catch (e) {
+    process.stderr.write(`AXME embed: failed to index ${type2} '${slug}': ${e.message}
+`);
+  }
+}
+var EMBED_DIMENSION, RUNTIME_DIR, INDEX_DIRNAME, EMBEDDINGS_FILENAME, _cachedEmbedder, _writeQueue;
+var init_embeddings = __esm({
+  "src/storage/embeddings.ts"() {
+    "use strict";
+    init_engine();
+    EMBED_DIMENSION = 384;
+    RUNTIME_DIR = join20(homedir6(), ".local", "share", "axme-code", "runtime");
+    INDEX_DIRNAME = "_index";
+    EMBEDDINGS_FILENAME = "embeddings.json";
+    _cachedEmbedder = null;
+    _writeQueue = Promise.resolve();
+  }
+});
+
+// src/tools/search-install.ts
+var search_install_exports = {};
+__export(search_install_exports, {
+  reindexAll: () => reindexAll,
+  runConfigSetSearch: () => runConfigSetSearch
+});
+import { spawnSync } from "node:child_process";
+import { mkdirSync as mkdirSync4, existsSync as existsSync11, writeFileSync as writeFileSync5 } from "node:fs";
+import { join as join21, dirname as dirname6 } from "node:path";
+function ensureBundledNpmInPlace() {
+  if (process.platform !== "win32") return;
+  const nodeDir = dirname6(process.execPath);
+  const npmCli = join21(nodeDir, "node_modules", "npm", "bin", "npm-cli.js");
+  if (existsSync11(npmCli)) return;
+  const tarball = join21(nodeDir, "npm-bundle.tar.gz");
+  if (!existsSync11(tarball)) return;
+  try {
+    spawnSync("tar", ["-xzf", tarball, "-C", nodeDir], { stdio: "pipe", windowsHide: true });
+  } catch {
+  }
+}
+function resolveNpm() {
+  if (process.platform !== "win32") {
+    return { cmd: "npm", args: [], useShell: false };
+  }
+  ensureBundledNpmInPlace();
+  const nodeDir = dirname6(process.execPath);
+  const npmCli = join21(nodeDir, "node_modules", "npm", "bin", "npm-cli.js");
+  if (existsSync11(npmCli)) {
+    return { cmd: process.execPath, args: [npmCli], useShell: false };
+  }
+  const cmdCandidate = join21(nodeDir, "npm.cmd");
+  if (existsSync11(cmdCandidate)) {
+    return { cmd: cmdCandidate, args: [], useShell: true };
+  }
+  return { cmd: "npm.cmd", args: [], useShell: true };
+}
+function installTransformers() {
+  const dir = runtimeDir();
+  if (!existsSync11(dir)) mkdirSync4(dir, { recursive: true });
+  const pkgJson = join21(dir, "package.json");
+  if (!existsSync11(pkgJson)) {
+    writeFileSync5(pkgJson, JSON.stringify({ name: "axme-code-runtime", private: true, version: "0.0.0" }, null, 2) + "\n");
+  }
+  process.stderr.write(`AXME: installing semantic-search runtime into ${dir} (one-time, ~100 MB)...
+`);
+  const npm = resolveNpm();
+  const npmArgs = [
+    ...npm.args,
+    "install",
+    "--prefix",
+    dir,
+    "--no-audit",
+    "--no-fund",
+    // sharp is listed as an optionalDependency of @huggingface/
+    // transformers, but transformers' code unconditionally requires
+    // it at module load time (image utils are imported even when the
+    // caller only uses text pipelines). An earlier round of fixes
+    // tried `--omit=optional` to skip sharp's troublesome postinstall
+    // — that worked at install time, but the runtime then failed with
+    // `Could not load the "sharp" module using the win32-x64 runtime`
+    // when our embedder tried to import transformers (verified on a
+    // clean Windows VM 2026-05-19). PATH augmentation below is the
+    // real fix — sharp's postinstall `cmd /c node install/check.js`
+    // finds `node` via PATH, downloads its prebuilt binary, and the
+    // runtime load succeeds.
+    `@huggingface/transformers@${TRANSFORMERS_VERSION}`
+  ];
+  const spawnArgs = npm.useShell ? npmArgs.map((a) => /[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a) : npmArgs;
+  const nodeDir = dirname6(process.execPath);
+  const sep = process.platform === "win32" ? ";" : ":";
+  const augmentedPath = `${nodeDir}${sep}${process.env.PATH ?? ""}`;
+  const result = spawnSync(npm.cmd, spawnArgs, {
+    stdio: ["ignore", "inherit", "inherit"],
+    shell: npm.useShell,
+    env: { ...process.env, PATH: augmentedPath }
+  });
+  if (result.error) return { ok: false, error: `npm spawn failed (${npm.cmd}): ${result.error.message}` };
+  if (result.status !== 0) return { ok: false, error: `npm install exited with code ${result.status} (npm=${npm.cmd})` };
+  _resetEmbedderCache();
+  return { ok: true };
+}
+function entryText(title, body) {
+  return `${title}. ${body}`;
+}
+async function reindexAll(projectPath) {
+  if (!isRuntimeInstalled()) {
+    return {
+      ok: false,
+      error: "Embeddings runtime not installed. Run `axme-code config set context.mode search` first."
+    };
+  }
+  const embedder = await loadEmbedder();
+  if (!embedder) {
+    return { ok: false, error: "Failed to load embedder (runtime present but module did not load)." };
+  }
+  const memories = listMemories(projectPath);
+  const decisions = listDecisions(projectPath);
+  const total = memories.length + decisions.length;
+  if (total === 0) {
+    await saveEmbeddings(projectPath, []);
+    return { ok: true, indexed: 0 };
+  }
+  const records = [];
+  let processed = 0;
+  const tickEvery = Math.max(1, Math.floor(total / 20));
+  const now = Date.now();
+  for (const m of memories) {
+    const vec = await embedder.embed(entryText(m.title, m.description));
+    records.push({
+      slug: m.slug,
+      type: "memory",
+      title: m.title,
+      description: m.description,
+      mtime: now,
+      embedding: Array.from(vec)
+    });
+    processed++;
+    if (processed % tickEvery === 0) {
+      process.stderr.write(`  embedded ${processed}/${total}\r`);
+    }
+  }
+  for (const d of decisions) {
+    const vec = await embedder.embed(entryText(d.title, d.decision));
+    records.push({
+      slug: d.id,
+      type: "decision",
+      title: d.title,
+      description: d.decision,
+      mtime: now,
+      embedding: Array.from(vec)
+    });
+    processed++;
+    if (processed % tickEvery === 0) {
+      process.stderr.write(`  embedded ${processed}/${total}\r`);
+    }
+  }
+  process.stderr.write(`  embedded ${processed}/${total}
+`);
+  await saveEmbeddings(projectPath, records);
+  return { ok: true, indexed: records.length };
+}
+async function runConfigSetSearch(projectPath) {
+  if (!isRuntimeInstalled()) {
+    const installed = installTransformers();
+    if (!installed.ok) return { ok: false, error: installed.error };
+  }
+  return reindexAll(projectPath);
+}
+var TRANSFORMERS_VERSION;
+var init_search_install = __esm({
+  "src/tools/search-install.ts"() {
+    "use strict";
+    init_memory();
+    init_decisions();
+    init_embeddings();
+    TRANSFORMERS_VERSION = "^4.0.1";
   }
 });
 
@@ -7397,9 +8436,9 @@ var init_parseUtil = __esm({
         if (this.value !== "aborted")
           this.value = "aborted";
       }
-      static mergeArray(status, results) {
+      static mergeArray(status, results2) {
         const arrayValue = [];
-        for (const s of results) {
+        for (const s of results2) {
           if (s.status === "aborted")
             return INVALID;
           if (s.status === "dirty")
@@ -9637,19 +10676,19 @@ var init_types2 = __esm({
       _parse(input) {
         const { ctx } = this._processInputParams(input);
         const options = this._def.options;
-        function handleResults(results) {
-          for (const result of results) {
+        function handleResults(results2) {
+          for (const result of results2) {
             if (result.result.status === "valid") {
               return result.result;
             }
           }
-          for (const result of results) {
+          for (const result of results2) {
             if (result.result.status === "dirty") {
               ctx.common.issues.push(...result.ctx.common.issues);
               return result.result;
             }
           }
-          const unionErrors = results.map((result) => new ZodError(result.ctx.common.issues));
+          const unionErrors = results2.map((result) => new ZodError(result.ctx.common.issues));
           addIssueToContext(ctx, {
             code: ZodIssueCode.invalid_union,
             unionErrors
@@ -9923,8 +10962,8 @@ var init_types2 = __esm({
           return schema2._parse(new ParseInputLazyPath(ctx, item, ctx.path, itemIndex));
         }).filter((x) => !!x);
         if (ctx.common.async) {
-          return Promise.all(items).then((results) => {
-            return ParseStatus.mergeArray(status, results);
+          return Promise.all(items).then((results2) => {
+            return ParseStatus.mergeArray(status, results2);
           });
         } else {
           return ParseStatus.mergeArray(status, items);
@@ -11160,10 +12199,10 @@ function getElementAtPath(obj, path) {
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
   const promises = keys.map((key) => promisesObj[key]);
-  return Promise.all(promises).then((results) => {
+  return Promise.all(promises).then((results2) => {
     const resolvedObj = {};
     for (let i = 0; i < keys.length; i++) {
-      resolvedObj[keys[i]] = results[i];
+      resolvedObj[keys[i]] = results2[i];
     }
     return resolvedObj;
   });
@@ -12786,14 +13825,14 @@ function handleCatchall(proms, input, payload, ctx, def, inst) {
     return payload;
   });
 }
-function handleUnionResults(results, final, inst, ctx) {
-  for (const result of results) {
+function handleUnionResults(results2, final, inst, ctx) {
+  for (const result of results2) {
     if (result.issues.length === 0) {
       final.value = result.value;
       return final;
     }
   }
-  const nonaborted = results.filter((r) => !aborted(r));
+  const nonaborted = results2.filter((r) => !aborted(r));
   if (nonaborted.length === 1) {
     final.value = nonaborted[0].value;
     return nonaborted[0];
@@ -12802,12 +13841,12 @@ function handleUnionResults(results, final, inst, ctx) {
     code: "invalid_union",
     input: final.value,
     inst,
-    errors: results.map((result) => result.issues.map((iss) => finalizeIssue(iss, ctx, config())))
+    errors: results2.map((result) => result.issues.map((iss) => finalizeIssue(iss, ctx, config())))
   });
   return final;
 }
-function handleExclusiveUnionResults(results, final, inst, ctx) {
-  const successes = results.filter((r) => r.issues.length === 0);
+function handleExclusiveUnionResults(results2, final, inst, ctx) {
+  const successes = results2.filter((r) => r.issues.length === 0);
   if (successes.length === 1) {
     final.value = successes[0].value;
     return final;
@@ -12817,7 +13856,7 @@ function handleExclusiveUnionResults(results, final, inst, ctx) {
       code: "invalid_union",
       input: final.value,
       inst,
-      errors: results.map((result) => result.issues.map((iss) => finalizeIssue(iss, ctx, config())))
+      errors: results2.map((result) => result.issues.map((iss) => finalizeIssue(iss, ctx, config())))
     });
   } else {
     final.issues.push({
@@ -13826,25 +14865,25 @@ var init_schemas = __esm({
           return first(payload, ctx);
         }
         let async = false;
-        const results = [];
+        const results2 = [];
         for (const option of def.options) {
           const result = option._zod.run({
             value: payload.value,
             issues: []
           }, ctx);
           if (result instanceof Promise) {
-            results.push(result);
+            results2.push(result);
             async = true;
           } else {
             if (result.issues.length === 0)
               return result;
-            results.push(result);
+            results2.push(result);
           }
         }
         if (!async)
-          return handleUnionResults(results, payload, inst, ctx);
-        return Promise.all(results).then((results2) => {
           return handleUnionResults(results2, payload, inst, ctx);
+        return Promise.all(results2).then((results3) => {
+          return handleUnionResults(results3, payload, inst, ctx);
         });
       };
     });
@@ -13858,23 +14897,23 @@ var init_schemas = __esm({
           return first(payload, ctx);
         }
         let async = false;
-        const results = [];
+        const results2 = [];
         for (const option of def.options) {
           const result = option._zod.run({
             value: payload.value,
             issues: []
           }, ctx);
           if (result instanceof Promise) {
-            results.push(result);
+            results2.push(result);
             async = true;
           } else {
-            results.push(result);
+            results2.push(result);
           }
         }
         if (!async)
-          return handleExclusiveUnionResults(results, payload, inst, ctx);
-        return Promise.all(results).then((results2) => {
           return handleExclusiveUnionResults(results2, payload, inst, ctx);
+        return Promise.all(results2).then((results3) => {
+          return handleExclusiveUnionResults(results3, payload, inst, ctx);
         });
       };
     });
@@ -38123,141 +39162,6 @@ var init_stdio2 = __esm({
   }
 });
 
-// src/storage/embeddings.ts
-import { createRequire } from "node:module";
-import { existsSync as existsSync9, statSync as statSync5 } from "node:fs";
-import { homedir as homedir6 } from "node:os";
-import { join as join19 } from "node:path";
-import { pathToFileURL } from "node:url";
-function indexDir(projectPath) {
-  return join19(projectPath, ".axme-code", INDEX_DIRNAME);
-}
-function embeddingsPath(projectPath) {
-  return join19(indexDir(projectPath), EMBEDDINGS_FILENAME);
-}
-function runtimeDir() {
-  return RUNTIME_DIR;
-}
-function isRuntimeInstalled() {
-  return existsSync9(join19(RUNTIME_DIR, "node_modules", "@huggingface", "transformers"));
-}
-async function loadEmbedder() {
-  if (_cachedEmbedder) return _cachedEmbedder;
-  if (!isRuntimeInstalled()) return null;
-  const runtimeRequire = createRequire(join19(RUNTIME_DIR, "node_modules", ".package-lock.json"));
-  let mod;
-  try {
-    const requirePath = runtimeRequire.resolve("@huggingface/transformers");
-    mod = await import(pathToFileURL(requirePath).href);
-  } catch (e) {
-    const msg = e?.message ?? String(e);
-    if (process.platform === "win32" && /could not be found|onnxruntime_binding\.node/i.test(msg)) {
-      process.stderr.write(
-        `AXME: failed to load semantic-search runtime. The most common cause on Windows is
-      a missing Microsoft Visual C++ Redistributable (required by onnxruntime-node).
-      Install from https://aka.ms/vs/17/release/vc_redist.x64.exe and retry
-      \`axme-code config set context.mode search\` (or \`axme-code reindex\`).
-      Underlying error: ${msg}
-`
-      );
-    } else {
-      process.stderr.write(`AXME: failed to load semantic-search runtime: ${msg}
-`);
-    }
-    return null;
-  }
-  const pipe2 = await mod.pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2", {
-    dtype: "fp32"
-  });
-  async function embed(text) {
-    const result = await pipe2(text, { pooling: "mean", normalize: true });
-    return new Float32Array(result.data);
-  }
-  _cachedEmbedder = { embed, dimension: EMBED_DIMENSION };
-  return _cachedEmbedder;
-}
-function _resetEmbedderCache() {
-  _cachedEmbedder = null;
-}
-function cosine(a, b) {
-  let s = 0;
-  const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i++) s += a[i] * b[i];
-  return s;
-}
-function loadEmbeddings(projectPath) {
-  const raw = readSafe(embeddingsPath(projectPath));
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed;
-  } catch {
-    return [];
-  }
-}
-function saveEmbeddings(projectPath, records) {
-  _writeQueue = _writeQueue.then(() => {
-    ensureDir(indexDir(projectPath));
-    const json3 = JSON.stringify(records);
-    atomicWrite(embeddingsPath(projectPath), json3);
-  }).catch(() => {
-  });
-  return _writeQueue;
-}
-function topK(records, qvec, k, type2) {
-  const filtered = type2 ? records.filter((r) => r.type === type2) : records;
-  const scored = filtered.map((r) => ({
-    slug: r.slug,
-    type: r.type,
-    title: r.title,
-    description: r.description,
-    score: cosine(qvec, r.embedding)
-  }));
-  scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, Math.min(k, scored.length));
-}
-async function upsertEmbedding(projectPath, embedder, record2, text) {
-  const vec = await embedder.embed(text);
-  const records = loadEmbeddings(projectPath);
-  const idx = records.findIndex((r) => r.slug === record2.slug && r.type === record2.type);
-  const next = { ...record2, embedding: Array.from(vec) };
-  if (idx >= 0) records[idx] = next;
-  else records.push(next);
-  await saveEmbeddings(projectPath, records);
-  return true;
-}
-async function embedKbEntry(projectPath, slug, type2, title, description, contextMode) {
-  if (contextMode !== "search") return;
-  try {
-    const embedder = await loadEmbedder();
-    if (!embedder) return;
-    const text = `${title}. ${description}`;
-    await upsertEmbedding(
-      projectPath,
-      embedder,
-      { slug, type: type2, title, description, mtime: Date.now() },
-      text
-    );
-  } catch (e) {
-    process.stderr.write(`AXME embed: failed to index ${type2} '${slug}': ${e.message}
-`);
-  }
-}
-var EMBED_DIMENSION, RUNTIME_DIR, INDEX_DIRNAME, EMBEDDINGS_FILENAME, _cachedEmbedder, _writeQueue;
-var init_embeddings = __esm({
-  "src/storage/embeddings.ts"() {
-    "use strict";
-    init_engine();
-    EMBED_DIMENSION = 384;
-    RUNTIME_DIR = join19(homedir6(), ".local", "share", "axme-code", "runtime");
-    INDEX_DIRNAME = "_index";
-    EMBEDDINGS_FILENAME = "embeddings.json";
-    _cachedEmbedder = null;
-    _writeQueue = Promise.resolve();
-  }
-});
-
 // src/storage/workspace-merge.ts
 var workspace_merge_exports = {};
 __export(workspace_merge_exports, {
@@ -38351,9 +39255,9 @@ __export(questions_exports, {
   markQuestionApplied: () => markQuestionApplied,
   questionsContext: () => questionsContext
 });
-import { join as join20 } from "node:path";
+import { join as join22 } from "node:path";
 function questionsPath(projectPath) {
-  return join20(projectPath, AXME_CODE_DIR, QUESTIONS_FILE);
+  return join22(projectPath, AXME_CODE_DIR, QUESTIONS_FILE);
 }
 function nextId(existing) {
   const maxNum = existing.reduce((max, q) => {
@@ -38415,7 +39319,7 @@ function askQuestion(projectPath, input) {
   };
   const block = formatQuestion(q);
   const path = questionsPath(projectPath);
-  ensureDir(join20(projectPath, AXME_CODE_DIR));
+  ensureDir(join22(projectPath, AXME_CODE_DIR));
   const prev = readSafe(path);
   atomicWrite(path, prev ? prev.trimEnd() + "\n\n" + block : block);
   return q;
@@ -38494,8 +39398,8 @@ __export(backlog_exports, {
   toBacklogSlug: () => toBacklogSlug,
   updateBacklogItem: () => updateBacklogItem
 });
-import { readdirSync as readdirSync10, readFileSync as readFileSync13 } from "node:fs";
-import { join as join21 } from "node:path";
+import { readdirSync as readdirSync10, readFileSync as readFileSync14 } from "node:fs";
+import { join as join23 } from "node:path";
 function initBacklogStore(projectPath) {
   ensureDir(backlogDir(projectPath));
 }
@@ -38537,7 +39441,7 @@ function listBacklogItems(projectPath, status) {
   const dir = backlogDir(projectPath);
   if (!pathExists(dir)) return [];
   const files = readdirSync10(dir).filter((f) => f.startsWith("B-") && f.endsWith(".md")).sort();
-  const items = files.map((f) => parseBacklogFile(readFileSync13(join21(dir, f), "utf-8"))).filter(Boolean);
+  const items = files.map((f) => parseBacklogFile(readFileSync14(join23(dir, f), "utf-8"))).filter(Boolean);
   if (status) return items.filter((i) => i.status === status);
   return items;
 }
@@ -38550,7 +39454,7 @@ function backlogExists(projectPath) {
   return pathExists(backlogDir(projectPath));
 }
 function backlogDir(projectPath) {
-  return join21(projectPath, AXME_CODE_DIR, BACKLOG_DIR);
+  return join23(projectPath, AXME_CODE_DIR, BACKLOG_DIR);
 }
 function backlogContext(projectPath) {
   const items = listBacklogItems(projectPath);
@@ -38585,7 +39489,7 @@ function showBacklog(projectPath, status) {
   }).join("\n");
 }
 function itemPath(projectPath, id, slug) {
-  return join21(backlogDir(projectPath), `${id}-${slug}.md`);
+  return join23(backlogDir(projectPath), `${id}-${slug}.md`);
 }
 function toBacklogSlug(text) {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50);
@@ -38654,23 +39558,23 @@ var init_backlog = __esm({
 });
 
 // src/tools/context.ts
-import { join as join22 } from "node:path";
-import { existsSync as existsSync10 } from "node:fs";
+import { join as join24 } from "node:path";
+import { existsSync as existsSync12 } from "node:fs";
 function buildStorageRootHeader(projectPath, workspacePath) {
   const ws = detectWorkspace(projectPath);
-  const hasGit = existsSync10(join22(projectPath, ".git"));
+  const hasGit = existsSync12(join24(projectPath, ".git"));
   const isWorkspace2 = hasGit ? false : ws.type !== "single" || workspacePath != null && workspacePath !== projectPath;
   const sessionType = isWorkspace2 ? "workspace (multi-repo)" : "single-repo";
-  const storageRoot = join22(projectPath, AXME_CODE_DIR);
+  const storageRoot = join24(projectPath, AXME_CODE_DIR);
   const lines = [
     "# AXME Storage Root",
     "",
     `- Session origin: ${projectPath}`,
     `- Session type: ${sessionType}`,
     `- Storage root: ${storageRoot}`,
-    `- Sessions dir: ${storageRoot}/sessions`,
-    `- Audit logs dir: ${storageRoot}/audit-logs`,
-    `- Audit worker logs: ${storageRoot}/audit-worker-logs`,
+    `- Sessions dir: ${join24(storageRoot, "sessions")}`,
+    `- Audit logs dir: ${join24(storageRoot, "audit-logs")}`,
+    `- Audit worker logs: ${join24(storageRoot, "audit-worker-logs")}`,
     "",
     "**CRITICAL**: For any direct inspection of .axme-code/ files via Bash (ls, cat, grep, find, etc.), use ABSOLUTE paths rooted at the Storage root above. Do NOT use relative paths from your cwd \u2014 in a multi-repo workspace, your cwd may point into a child repo that has its own separate .axme-code/ storage, and you will silently read the wrong dataset. The Storage root above is the only path that corresponds to this session's live data.",
     "",
@@ -38681,14 +39585,14 @@ function buildStorageRootHeader(projectPath, workspacePath) {
 function getFullContextSections(projectPath, workspacePath) {
   const parts = [];
   parts.push(buildStorageRootHeader(projectPath, workspacePath));
-  const storageDirExists = pathExists(join22(projectPath, AXME_CODE_DIR));
+  const storageDirExists = pathExists(join24(projectPath, AXME_CODE_DIR));
   const hasConfig = configExists(projectPath);
   if (!storageDirExists || !hasConfig) {
-    const setupLock = join22(projectPath, AXME_CODE_DIR, "setup.lock");
+    const setupLock = join24(projectPath, AXME_CODE_DIR, "setup.lock");
     if (pathExists(setupLock)) {
       return [parts[0] + "\n\nSetup is already running. Wait for it to finish, then call axme_context again."];
     }
-    return [parts[0] + "\n\nProject not initialized. FIRST tell the user: 'Initializing AXME Code knowledge base for this project. This takes 1-2 minutes on first run.' THEN run `axme-code setup --plugin` via Bash tool. Do NOT ask permission \u2014 just inform and run."];
+    return [parts[0] + "\n\nProject not initialized \u2014 `.axme-code/` is missing in this workspace. **Do NOT run `axme-code setup` yourself.** Initialization is the user's job (Cursor: run `AXME: Setup` from Command Palette; Claude Code: run `axme-code setup` in terminal). Tell the user this and stop; once they finish setup, call `axme_context` again and the knowledge base will load."];
   }
   if (workspacePath && workspacePath !== projectPath) {
     const wsRules = loadSafetyRules(workspacePath);
@@ -38705,7 +39609,7 @@ function getFullContextSections(projectPath, workspacePath) {
   }
   const handoff = handoffContext(workspacePath ?? projectPath);
   if (handoff) parts.push(handoff);
-  const worklogPath2 = join22(workspacePath ?? projectPath, AXME_CODE_DIR, "worklog.md");
+  const worklogPath2 = join24(workspacePath ?? projectPath, AXME_CODE_DIR, "worklog.md");
   const worklogContent = readSafe(worklogPath2);
   if (worklogContent.length > 20) {
     const entries = worklogContent.split(/(?=^## )/m).filter((e) => e.trim());
@@ -38734,7 +39638,7 @@ function getFullContextSections(projectPath, workspacePath) {
     const files = loadOracleFiles(projectPath);
     const oracleIsMinimal = files && files.stack.length < 200 && !files.patterns.includes("CLAUDE.md");
     if (oracleIsMinimal) {
-      parts.push("**WARNING:** This project was initialized with deterministic scan only (no LLM). Run `axme-code setup " + projectPath + "` for deep LLM scan.");
+      parts.push("**WARNING:** This project was initialized with deterministic scan only (no LLM). Tell the user to re-run `axme-code setup " + projectPath + "` for a deep LLM scan. **Do not run it yourself** \u2014 initialization is the user's job.");
     }
   }
   const pendingProject = listPendingAudits(projectPath);
@@ -38832,9 +39736,7 @@ function buildSearchModeCatalog(projectPath, workspacePath) {
     lines.push("### Decisions");
     lines.push("");
     for (const d of decisions) {
-      const enforce = d.enforce ?? "info";
-      const desc = d.decision ? d.decision.replace(/\s+/g, " ").slice(0, 200) : "";
-      lines.push(`- [${enforce}] **${d.id}** \u2014 ${d.title}${desc ? ` \u2014 ${desc}` : ""}`);
+      lines.push(renderDecisionCatalogLine(d));
     }
     lines.push("");
   }
@@ -38842,16 +39744,54 @@ function buildSearchModeCatalog(projectPath, workspacePath) {
     lines.push("### Memories");
     lines.push("");
     for (const m of memories) {
-      const desc = m.description ? m.description.replace(/\s+/g, " ").slice(0, 200) : "";
-      lines.push(`- [${m.type}] **${m.slug}** \u2014 ${m.title}${desc ? ` \u2014 ${desc}` : ""}`);
+      lines.push(renderMemoryCatalogLine(m));
     }
     lines.push("");
   }
   return lines.join("\n");
 }
+function renderDecisionCatalogLine(d) {
+  const enforce = d.enforce ?? "info";
+  const desc = d.decision ? d.decision.replace(/\s+/g, " ").slice(0, 200) : "";
+  return `- [${enforce}] **${d.id}** \u2014 ${d.title}${desc ? ` \u2014 ${desc}` : ""}`;
+}
+function renderMemoryCatalogLine(m) {
+  const desc = m.description ? m.description.replace(/\s+/g, " ").slice(0, 200) : "";
+  return `- [${m.type}] **${m.slug}** \u2014 ${m.title}${desc ? ` \u2014 ${desc}` : ""}`;
+}
+function buildDecisionsCatalogString(projectPath, workspacePath) {
+  const decisions = listDecisionsMerged(projectPath, workspacePath);
+  const lines = [
+    "## Decisions Catalog (search mode)",
+    "",
+    `${decisions.length} decision(s). Bodies NOT loaded \u2014 fetch via axme_get_decision(id_or_slug) or axme_search_kb(query).`,
+    ""
+  ];
+  if (decisions.length === 0) {
+    lines.push("No decisions recorded.");
+    return lines.join("\n");
+  }
+  for (const d of decisions) lines.push(renderDecisionCatalogLine(d));
+  return lines.join("\n");
+}
+function buildMemoriesCatalogString(projectPath, workspacePath) {
+  const memories = listMemoriesMerged(projectPath, workspacePath);
+  const lines = [
+    "## Memories Catalog (search mode)",
+    "",
+    `${memories.length} memory(ies). Bodies NOT loaded \u2014 fetch via axme_get_memory(slug) or axme_search_kb(query).`,
+    ""
+  ];
+  if (memories.length === 0) {
+    lines.push("No memories recorded.");
+    return lines.join("\n");
+  }
+  for (const m of memories) lines.push(renderMemoryCatalogLine(m));
+  return lines.join("\n");
+}
 function buildSearchModeInstructions(runtimeInstalled) {
   const searchAvailable = runtimeInstalled ? "- `axme_search_kb(query, type?, k?)` \u2014 semantic search across both" : "- `axme_search_kb(query, ...)` \u2014 currently UNAVAILABLE (transformers runtime not installed; falls back to a hint message)";
-  return [
+  const lines = [
     "## Search mode active \u2014 bodies fetched on demand",
     "",
     "You have a catalog of every memory and decision above (titles + descriptions only).",
@@ -38864,8 +39804,25 @@ function buildSearchModeInstructions(runtimeInstalled) {
     "- `axme_get_decision(id_or_slug)` \u2014 full body of one decision",
     searchAvailable,
     "",
-    runtimeInstalled ? 'Use `axme_search_kb` for fuzzy lookups ("how did we handle X?"). Use `axme_get_*` when you already know the slug from the catalog.' : "Without the runtime, navigate the catalog above by topic and fetch bodies via `axme_get_*`. To enable semantic search: `axme-code config set context.mode search` (re-runs install)."
-  ].join("\n");
+    "## Active KB usage (when to call search/get)",
+    "",
+    "**MUST** call `axme_search_kb` (or `axme_get_*` when slug is known) when ANY of these triggers fire:",
+    "",
+    '- User asks "how did we\u2026", "why did we\u2026", "\u0447\u0442\u043E \u043C\u044B \u0440\u0435\u0448\u0438\u043B\u0438 \u043F\u0440\u043E\u2026", "why is X this way?" \u2192 search the topic.',
+    "- About to write or modify code that touches: git, safety hooks, storage, agent SDK, build, release, telemetry, auth, MCP tools \u2192 search the area first.",
+    "- About to suggest a fix for a bug \u2192 search similar past failures (memory type=feedback) before proposing.",
+    "- User mentions a library, platform, tool, or error message by name \u2192 search that name.",
+    "- A catalog title looks partially relevant but its 1-line description is too short to decide \u2192 fetch the body.",
+    "- Before any architectural recommendation or new pattern \u2192 search decisions for that subsystem to avoid contradiction or duplication.",
+    "- Before saving a new decision/memory \u2192 search to check if a similar one already exists (avoids dupes).",
+    "",
+    "Skipping search has caused real regressions in this project (force-pushing main, missing #!axme gate suffix,",
+    "duplicating an existing decision). The catalog scan is free; semantic search is sub-second and uses zero",
+    "API tokens (runs locally on CPU). When in doubt, search."
+  ];
+  lines.push("");
+  lines.push(runtimeInstalled ? "Use `axme_search_kb` for fuzzy lookups. Use `axme_get_*` when you already know the slug from the catalog." : "Runtime not installed: navigate the catalog above by topic and fetch bodies via `axme_get_*`. To enable semantic search: `axme-code config set context.mode search` (re-runs install).");
+  return lines.join("\n");
 }
 var init_context = __esm({
   "src/tools/context.ts"() {
@@ -38963,15 +39920,15 @@ function saveMemoryTool(projectPath, input, sessionId) {
 }
 function searchMemoryTool(projectPath, query) {
   const keywords = query.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
-  const results = searchMemories(projectPath, keywords);
+  const results2 = searchMemories(projectPath, keywords);
   return {
-    results: results.slice(0, 20).map((m) => ({
+    results: results2.slice(0, 20).map((m) => ({
       slug: m.slug,
       type: m.type,
       title: m.title,
       description: m.description
     })),
-    count: results.length
+    count: results2.length
   };
 }
 function listMemoriesTool(projectPath, type2) {
@@ -39196,8 +40153,14 @@ async function searchKbTool(projectPath, input) {
     return [
       "Semantic search runtime is not installed.",
       "",
-      "To enable: `axme-code config set context.mode search`",
-      "(installs ~100MB transformers.js + ~30MB MiniLM model, one-time).",
+      "To enable:",
+      "  \u2022 CLI:    `axme-code config set context.mode search`",
+      "  \u2022 Cursor: sidebar \u2192 Knowledge base \u2192 Search mode \u2192 Enable",
+      "            (or Command Palette \u2192 AXME: Enable semantic search)",
+      "",
+      "Installs @huggingface/transformers (~770 MB on Linux with all",
+      "platform prebuilts, less on macOS/Windows) + builds the initial",
+      "embeddings index. One-time per machine.",
       "",
       "In the meantime, list all entries with axme_memories / axme_decisions",
       "and use axme_get_memory(slug) / axme_get_decision(id) for full bodies."
@@ -39245,18 +40208,20 @@ var init_kb_search = __esm({
 // src/audit-spawner.ts
 import { spawn } from "node:child_process";
 import { openSync as openSync3, closeSync as closeSync3 } from "node:fs";
-import { join as join23 } from "node:path";
-function spawnDetachedAuditWorker(workspacePath, sessionId) {
-  const logsDir = join23(workspacePath, AXME_CODE_DIR, AUDIT_WORKER_LOGS_DIR);
+import { join as join25 } from "node:path";
+function spawnDetachedAuditWorker(workspacePath, sessionId, ide) {
+  const logsDir = join25(workspacePath, AXME_CODE_DIR, AUDIT_WORKER_LOGS_DIR);
   ensureDir(logsDir);
-  const logPath = join23(logsDir, `${sessionId}.log`);
+  const logPath = join25(logsDir, `${sessionId}.log`);
   const fd = openSync3(logPath, "a");
   try {
     const cliPath = process.argv[1];
     if (!cliPath) throw new Error("audit-spawner: cannot determine CLI path from process.argv[1]");
+    const argv = [cliPath, "audit-session", "--workspace", workspacePath, "--session", sessionId];
+    if (ide) argv.push("--ide", ide);
     const child = spawn(
       process.execPath,
-      [cliPath, "audit-session", "--workspace", workspacePath, "--session", sessionId],
+      argv,
       {
         detached: true,
         stdio: ["ignore", fd, fd],
@@ -39265,7 +40230,7 @@ function spawnDetachedAuditWorker(workspacePath, sessionId) {
     );
     child.unref();
     process.stderr.write(
-      `AXME: spawned detached audit worker pid=${child.pid} session=${sessionId} log=${logPath}
+      `AXME: spawned detached audit worker pid=${child.pid} session=${sessionId} ide=${ide ?? "claude-code"} log=${logPath}
 `
     );
   } finally {
@@ -39287,13 +40252,13 @@ var init_audit_spawner = __esm({
 
 // src/auto-update.ts
 import { homedir as homedir7 } from "node:os";
-import { join as join24, resolve as resolve6, basename as basename6 } from "node:path";
+import { join as join26, resolve as resolve6, basename as basename6 } from "node:path";
 import {
-  readFileSync as readFileSync14,
-  writeFileSync as writeFileSync4,
-  mkdirSync as mkdirSync3,
+  readFileSync as readFileSync15,
+  writeFileSync as writeFileSync6,
+  mkdirSync as mkdirSync5,
   renameSync as renameSync2,
-  chmodSync as chmodSync2,
+  chmodSync as chmodSync3,
   unlinkSync as unlinkSync5
 } from "node:fs";
 function getUpdateNotification() {
@@ -39325,14 +40290,14 @@ function getBinaryPath() {
 }
 function readCache() {
   try {
-    return JSON.parse(readFileSync14(CACHE_FILE, "utf-8"));
+    return JSON.parse(readFileSync15(CACHE_FILE, "utf-8"));
   } catch {
     return null;
   }
 }
 function writeCache(cache) {
-  mkdirSync3(CONFIG_DIR, { recursive: true });
-  writeFileSync4(CACHE_FILE, JSON.stringify(cache, null, 2));
+  mkdirSync5(CONFIG_DIR, { recursive: true });
+  writeFileSync6(CACHE_FILE, JSON.stringify(cache, null, 2));
 }
 async function fetchLatestRelease() {
   try {
@@ -39368,8 +40333,8 @@ async function downloadBinary(tag, destPath) {
     clearTimeout(timeout);
     if (!resp.ok || !resp.body) return false;
     const buffer = Buffer.from(await resp.arrayBuffer());
-    writeFileSync4(tmpPath, buffer);
-    chmodSync2(tmpPath, 493);
+    writeFileSync6(tmpPath, buffer);
+    chmodSync3(tmpPath, 493);
     renameSync2(tmpPath, destPath);
     return true;
   } catch {
@@ -39451,16 +40416,23 @@ var init_auto_update = __esm({
     CHECK_INTERVAL_MS = 24 * 60 * 60 * 1e3;
     API_TIMEOUT_MS = 5e3;
     DOWNLOAD_TIMEOUT_MS = 6e4;
-    CONFIG_DIR = join24(homedir7(), ".config", "axme-code");
-    CACHE_FILE = join24(CONFIG_DIR, "update_check.json");
+    CONFIG_DIR = join26(homedir7(), ".config", "axme-code");
+    CACHE_FILE = join26(CONFIG_DIR, "update_check.json");
     updateNotification = null;
   }
 });
 
 // src/server.ts
 var server_exports = {};
-import { join as join25 } from "node:path";
-import { existsSync as existsSync12 } from "node:fs";
+import { join as join27 } from "node:path";
+import { existsSync as existsSync14 } from "node:fs";
+function resolveServerRoot() {
+  const argv = process.argv;
+  const flagIdx = argv.indexOf("--workspace");
+  if (flagIdx > -1 && argv[flagIdx + 1]) return argv[flagIdx + 1];
+  if (process.env.AXME_WORKSPACE) return process.env.AXME_WORKSPACE;
+  return process.cwd();
+}
 function getOwnedSessionIdForLogging() {
   const all = listClaudeSessionMappings(defaultProjectPath);
   const owned = all.filter((m) => m.ownerPpid === OWN_PPID);
@@ -39548,6 +40520,24 @@ function buildInstructions() {
   } else {
     parts.push("Call axme_context at session start. It returns compact meta and instructions to call axme_oracle, axme_decisions, axme_memories in parallel.");
   }
+  const axmeDirExists = existsSync14(join27(defaultProjectPath, ".axme-code"));
+  if (!axmeDirExists) {
+    parts.push(
+      `PROJECT SETUP REQUIRED (HIGHEST PRIORITY): this project has no .axme-code/ directory. BEFORE doing anything else, tell the user in their language: "AXME is not set up for this project. Want me to do it now? I'll scan the repo and save architecture decisions, patterns and safety rules into .axme-code/ \u2014 runs inline on your Cursor subscription, no extra cost." If the user agrees (any affirmative in any language), EXECUTE setup. Important \u2014 setup is a sequence of MCP TOOL CALLS, not a plan to describe. Bullet-listing what you would save in prose is a FAILURE \u2014 call the tool instead. Required:
+  1. Scan: read package.json/README/main configs + key source folders to understand stack, conventions, layout.
+  2. EXECUTE at least 5 axme_save_decision calls (scope=["workspace"], with concrete rationale tied to evidence).
+  3. EXECUTE at least 3 axme_save_memory calls (type="pattern", scope=["workspace"]) for gotchas / edge cases.
+  4. EXECUTE axme_update_safety for dangerous patterns in scripts/ or destructive commands.
+  4b. EXECUTE 4 axme_save_oracle calls \u2014 one per section (stack, structure, patterns, glossary). Stack: languages + frameworks + build tools. Structure: top-level dirs + entry points. Patterns: observed conventions. Glossary: project-specific terms. Oracle is the high-level overview the agent reads at startup of every future session.
+  5. ONLY after all tool calls are committed, summarize:
+     First line: "Saved X decisions, Y memories, Z safety rules + N preset rules" where N is the count of enforcement entries (deniedPrefixes + deniedCommands + protectedBranches + deniedPaths + readOnlyPaths) ALREADY in .axme-code/safety/rules.yaml that you did NOT add this session.
+     Then list those preset rules grouped by section (one per line under each header) and add: "These presets ship with AXME Code. You can edit .axme-code/safety/rules.yaml directly to add project-specific rules or remove ones you don't need."
+     Then list DECISIONS saved this session \u2014 one per line as "  - D-NNN: <short title>". Header: "Decisions saved this session (full bodies in .axme-code/decisions/):". Keep titles short \u2014 rationale already lives in the .md files.
+     Then list MEMORIES saved \u2014 one per line as "  - <slug>: <short title>". Header: "Memories saved this session (full bodies in .axme-code/memory/patterns/ and memory/feedback/):".
+     End with verbatim line: "All saved artifacts are persistent across sessions. Open the folders above to read full bodies, or ask me 'show decision D-NNN' / 'show memory <slug>' to fetch any of them."
+If you catch yourself writing "Save decision: X / Save memory: Y" as text, STOP and call axme_save_decision / axme_save_memory instead. The .axme-code/ directory is auto-bootstrapped by the first save call \u2014 you do not need to create it beforehand. After setup, proceed with the user's original request.`
+    );
+  }
   parts.push("TRUNCATED OUTPUT RULE: if ANY MCP tool output is truncated or saved to a file (you see 'Output too large' or 'saved to file'), you MUST use the Read tool to read the full file content into your context. Do not proceed with partial data.");
   parts.push("Save memories, decisions, and safety rules immediately when discovered during work.");
   parts.push('GIT COMMIT/PUSH GATE: every git commit and git push command MUST end with `#!axme pr=<NUMBER|none> repo=<OWNER/REPO>`. Example: `git commit -m "fix bug" #!axme pr=42 repo=AxmeAI/axme-code`. Use pr=none if no PR exists yet. Without this suffix the command will be blocked.');
@@ -39555,7 +40545,7 @@ function buildInstructions() {
   parts.push("SESSION CLOSE: when the user asks to close/end the session (any language), call axme_begin_close to get the close checklist. Follow it: extract memories/decisions/safety (choosing correct scope for each), prepare handoff data, then call axme_finalize_close with everything. After finalize, output to the user: storage summary (what saved where), then startup_text.");
   parts.push("DECISION CONFLICT RULE: if two active decisions contradict each other, treat the NEWER one (by date) as authoritative. The older one is a candidate for supersede at next audit.");
   parts.push(
-    `STORAGE ROOT: ${defaultProjectPath}/.axme-code \u2014 for any direct inspection of .axme-code/ files via Bash (ls, cat, grep, find), use this ABSOLUTE path. Do NOT use relative paths from your cwd; in a multi-repo workspace your cwd may point to a child repo with its own separate .axme-code/ storage.`
+    `STORAGE ROOT: ${join27(defaultProjectPath, ".axme-code")} \u2014 for any direct inspection of .axme-code/ files via Bash (ls, cat, grep, find), use this ABSOLUTE path. Do NOT use relative paths from your cwd; in a multi-repo workspace your cwd may point to a child repo with its own separate .axme-code/ storage.`
   );
   parts.push(
     "IMPORTANT: if axme_context output contains a 'Pending audits' section, a previous session's audit is still running and the knowledge base is incomplete. Tell the user, offer to wait and re-run axme_context or track with a TODO."
@@ -39571,7 +40561,7 @@ function ppWithScope(project_path, scope) {
     const repoScope = scope.find((s) => s !== "all");
     if (repoScope) {
       const match = serverWorkspace.projects.find((p) => p.name === repoScope);
-      if (match) return join25(defaultProjectPath, match.path);
+      if (match) return join27(defaultProjectPath, match.path);
     }
   }
   return defaultProjectPath;
@@ -39651,8 +40641,8 @@ var init_server3 = __esm({
     init_audit_spawner();
     init_auto_update();
     init_telemetry();
-    serverCwd = process.cwd();
-    serverHasGit = existsSync12(join25(serverCwd, ".git"));
+    serverCwd = resolveServerRoot();
+    serverHasGit = existsSync14(join27(serverCwd, ".git"));
     serverWorkspace = detectWorkspace(serverCwd);
     isWorkspace = serverHasGit ? false : serverWorkspace.type !== "single";
     defaultProjectPath = serverCwd;
@@ -39726,7 +40716,7 @@ var init_server3 = __esm({
     );
     server.tool(
       "axme_decisions",
-      "Show all project decisions with enforce levels.",
+      "Show project decisions. Output adapts to context.mode: full \u2192 enforce levels + decision body; search \u2192 catalog (id + title + 1-line description, fetch bodies via axme_get_decision).",
       {
         project_path: external_exports3.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
         page: external_exports3.number().optional().describe("Page number (1-based). Omit for first page. Follow pagination instructions if output is split.")
@@ -39734,8 +40724,16 @@ var init_server3 = __esm({
       async ({ project_path, page }) => {
         const resolved = pp(project_path);
         deliveredContext.add("decisions:" + resolved);
-        let sections = getDecisionSections(resolved);
-        if (isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath && deliveredContext.has("decisions:" + defaultWorkspacePath)) {
+        const config2 = readConfig(resolved);
+        const wsAlreadyDelivered = isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath && deliveredContext.has("decisions:" + defaultWorkspacePath);
+        let sections;
+        if (config2.contextMode === "search") {
+          const wsForMerge = isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath && !wsAlreadyDelivered ? defaultWorkspacePath : void 0;
+          sections = [buildDecisionsCatalogString(resolved, wsForMerge)];
+        } else {
+          sections = getDecisionSections(resolved);
+        }
+        if (wsAlreadyDelivered) {
           sections = [...sections, "*(Workspace decisions already loaded)*"];
         }
         const result = paginateSections(sections, page ?? 1, "axme_decisions", { project_path });
@@ -39744,7 +40742,7 @@ var init_server3 = __esm({
     );
     server.tool(
       "axme_memories",
-      "Show all project memories (feedback + patterns). Call at session start alongside axme_oracle and axme_decisions.",
+      "Show project memories (feedback + patterns). Output adapts to context.mode: full \u2192 titles + descriptions grouped by type; search \u2192 catalog (slug + title + 1-line description, fetch bodies via axme_get_memory). Call at session start alongside axme_oracle and axme_decisions.",
       {
         project_path: external_exports3.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
         page: external_exports3.number().optional().describe("Page number (1-based). Omit for first page. Follow pagination instructions if output is split.")
@@ -39752,15 +40750,25 @@ var init_server3 = __esm({
       async ({ project_path, page }) => {
         const resolved = pp(project_path);
         deliveredContext.add("memories:" + resolved);
+        const config2 = readConfig(resolved);
+        const wsAlreadyDelivered = isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath && deliveredContext.has("memories:" + defaultWorkspacePath);
+        const isRepoCall = isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath;
+        const wsForMerge = isRepoCall && !wsAlreadyDelivered ? defaultWorkspacePath : void 0;
         let sections;
-        if (isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath && deliveredContext.has("memories:" + defaultWorkspacePath)) {
+        if (config2.contextMode === "search") {
+          sections = [buildMemoriesCatalogString(resolved, wsForMerge ?? void 0)];
+          if (wsAlreadyDelivered) sections.push("*(Workspace memories already loaded)*");
+          const result2 = paginateSections(sections, page ?? 1, "axme_memories", { project_path });
+          return { content: [{ type: "text", text: result2.text }] };
+        }
+        if (wsAlreadyDelivered) {
           sections = getMemorySections(resolved);
           if (sections.length === 0) sections = ["No repo-specific memories."];
           sections.push("*(Workspace memories already loaded)*");
-        } else if (isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath) {
+        } else if (wsForMerge) {
           const { listMemories: listMemories3 } = await Promise.resolve().then(() => (init_memory(), memory_exports));
           const { mergeMemories: mergeMemories3 } = await Promise.resolve().then(() => (init_workspace_merge(), workspace_merge_exports));
-          const wsMemories = listMemories3(defaultWorkspacePath);
+          const wsMemories = listMemories3(wsForMerge);
           const projMemories = listMemories3(resolved);
           const merged = mergeMemories3(wsMemories, projMemories);
           if (merged.length === 0) {
@@ -39804,6 +40812,8 @@ var init_server3 = __esm({
         const sid = getOwnedSessionIdForLogging();
         const resolved = ppWithScope(project_path, scope);
         const result = saveMemoryTool(resolved, { type: type2, title, description, body, keywords, scope }, sid);
+        const { ensureOracleBootstrapped: ensureOracleBootstrapped2 } = await Promise.resolve().then(() => (init_oracle(), oracle_exports));
+        ensureOracleBootstrapped2(resolved);
         await embedKbEntry(resolved, result.slug, "memory", title, description, readConfig(resolved).contextMode);
         return { content: [{ type: "text", text: `Memory saved: ${result.slug} (${type2}) -> ${resolved}` }] };
       }
@@ -39822,6 +40832,8 @@ var init_server3 = __esm({
       async ({ project_path, title, decision, reasoning, enforce, scope }) => {
         const resolved = ppWithScope(project_path, scope);
         const result = saveDecisionTool(resolved, { title, decision, reasoning, enforce, scope });
+        const { ensureOracleBootstrapped: ensureOracleBootstrapped2 } = await Promise.resolve().then(() => (init_oracle(), oracle_exports));
+        ensureOracleBootstrapped2(resolved);
         await embedKbEntry(resolved, result.id, "decision", title, decision, readConfig(resolved).contextMode);
         return { content: [{ type: "text", text: `Decision saved: ${result.id} - ${title} -> ${resolved}` }] };
       }
@@ -39848,6 +40860,22 @@ var init_server3 = __esm({
       },
       async ({ project_path }) => {
         return { content: [{ type: "text", text: showSafetyTool(pp(project_path)) }] };
+      }
+    );
+    server.tool(
+      "axme_save_oracle",
+      "Write or append to one oracle section. Use during cooperative setup to populate stack / structure / patterns / glossary inline. Replaces by default; pass mode='append' to add to existing content.",
+      {
+        project_path: external_exports3.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+        section: external_exports3.enum(["stack", "structure", "patterns", "glossary"]).describe("Which oracle section to write"),
+        content: external_exports3.string().describe("Markdown body for this section"),
+        mode: external_exports3.enum(["replace", "append"]).optional().describe("Default 'replace'. 'append' adds to existing content.")
+      },
+      async ({ project_path, section, content, mode }) => {
+        const { saveOracleSection: saveOracleSection2 } = await Promise.resolve().then(() => (init_oracle(), oracle_exports));
+        const resolved = pp(project_path);
+        saveOracleSection2(resolved, section, content, mode ?? "replace");
+        return { content: [{ type: "text", text: `Oracle ${section} ${mode === "append" ? "appended" : "saved"}.` }] };
       }
     );
     server.tool(
@@ -40084,7 +41112,7 @@ ${lines.join("\n")}` }] };
           "",
           "## Step 2: Prepare Everything for `axme_finalize_close`",
           "",
-          "Collect ALL data into a single `axme_finalize_close` call:",
+          "Collect ALL data into a single `axme_finalize_close` call.",
           "",
           "### Extractions (arrays, can be empty):",
           "- `memories`: [{action, type, title, description, body, keywords, scope}]",
@@ -40094,15 +41122,19 @@ ${lines.join("\n")}` }] };
           "- `safety_rules`: [{action, rule_type, value}]",
           "  - action: `add` | `remove`",
           "",
-          "### Handoff:",
-          "- `stopped_at`: what the session stopped at (single line)",
-          "- `summary`: 2-5 bullet points of what was accomplished",
-          "- `in_progress`: current state (branches, PRs, uncommitted work)",
+          "### Handoff \u2014 six REQUIRED string fields. ALL must be present and non-empty.",
+          "If a session legitimately has nothing to report for one of them, pass an explicit placeholder string (examples below) \u2014 do NOT omit the field. Omitting yields per-field 'Expected string, received undefined' errors from Zod.",
+          "",
+          '- **`stopped_at`** (REQUIRED, single line) \u2014 where the session stopped, e.g. `"finalized PR #207 review"`',
+          '- **`summary`** (REQUIRED) \u2014 2-5 bullet points of accomplishments. Empty placeholder: `"- (no items)"`',
+          '- **`in_progress`** (REQUIRED) \u2014 branches, PRs, uncommitted work. Empty placeholder: `"(nothing in progress)"`',
+          '- **`next_steps`** (REQUIRED) \u2014 concrete next steps. Empty placeholder: `"(none \u2014 work is complete)"`',
+          "- **`worklog_entry`** (REQUIRED) \u2014 5-15 line narrative markdown summary of the session",
+          "- **`startup_text`** (REQUIRED) \u2014 ready-to-paste startup text for the next session",
+          "",
+          "### Handoff \u2014 optional fields (omit if not applicable):",
           "- `prs`: [{url, title, status}]",
-          "- `test_results`, `blockers`, `dirty_branches` (optional)",
-          "- `next_steps`: concrete next steps",
-          "- `worklog_entry`: narrative summary (5-15 lines markdown)",
-          "- `startup_text`: ready-to-paste text for next session",
+          "- `test_results`, `blockers`, `dirty_branches`",
           "",
           "## Step 3: Call `axme_finalize_close`",
           "",
@@ -40144,20 +41176,26 @@ ${lines.join("\n")}` }] };
           value: external_exports3.string()
         })).optional().describe("Safety rules to add/remove"),
         // --- Handoff ---
-        stopped_at: external_exports3.string().describe("What the session stopped at (single line)"),
-        summary: external_exports3.string().describe("2-5 bullet points of what was accomplished. Use real newlines, NOT literal backslash-n. Each bullet on its own line starting with '- '."),
-        in_progress: external_exports3.string().describe("Current state: branches, PRs, uncommitted work. Use real newlines, NOT literal backslash-n."),
+        // All six strings below are REQUIRED. If a session legitimately has
+        // nothing to report for one, pass an explicit placeholder like
+        // "(nothing in progress)" — do NOT omit the field. Omitting yields a
+        // Zod "Expected string, received undefined" error per missing field,
+        // which has historically been mis-read by agents as a per-field server
+        // bug rather than a missing-argument error.
+        stopped_at: external_exports3.string().min(1, "stopped_at is REQUIRED \u2014 pass a single-line description of where the session stopped, e.g. 'finalized PR #207 review'.").describe("[REQUIRED] What the session stopped at (single line)"),
+        summary: external_exports3.string().min(1, "summary is REQUIRED \u2014 pass 2-5 bullet points of accomplishments separated by real newlines, or '- (no items)' if truly empty.").describe("[REQUIRED] 2-5 bullet points of what was accomplished. Use real newlines, NOT literal backslash-n. Each bullet on its own line starting with '- '."),
+        in_progress: external_exports3.string().min(1, "in_progress is REQUIRED \u2014 pass branches / PRs / uncommitted work, or '(nothing in progress)' if the working tree is clean. Do not omit the field.").describe("[REQUIRED] Current state: branches, PRs, uncommitted work. Use real newlines, NOT literal backslash-n. Pass '(nothing in progress)' if clean."),
         prs: external_exports3.array(external_exports3.object({
           url: external_exports3.string(),
           title: external_exports3.string(),
           status: external_exports3.string()
-        })).optional().describe("PRs created/merged in this session"),
-        test_results: external_exports3.string().optional().describe("Test run summary"),
-        blockers: external_exports3.string().optional().describe("Blockers for next session"),
-        next_steps: external_exports3.string().describe("Concrete next steps for next session. Use real newlines, NOT literal backslash-n."),
-        dirty_branches: external_exports3.string().optional().describe("Branch names with state"),
-        worklog_entry: external_exports3.string().describe("Narrative session summary (5-15 lines markdown). Use real newlines, NOT literal backslash-n."),
-        startup_text: external_exports3.string().describe("Ready-to-paste startup text for the next session")
+        })).optional().describe("[optional] PRs created/merged in this session"),
+        test_results: external_exports3.string().optional().describe("[optional] Test run summary"),
+        blockers: external_exports3.string().optional().describe("[optional] Blockers for next session"),
+        next_steps: external_exports3.string().min(1, "next_steps is REQUIRED \u2014 pass concrete next steps for the next session, or '(none \u2014 work is complete)' if there are none. Do not omit the field.").describe("[REQUIRED] Concrete next steps for next session. Use real newlines, NOT literal backslash-n. Pass '(none \u2014 work is complete)' if there are none."),
+        dirty_branches: external_exports3.string().optional().describe("[optional] Branch names with state"),
+        worklog_entry: external_exports3.string().min(1, "worklog_entry is REQUIRED \u2014 pass a 5-15 line narrative summary of the session in markdown. Do not omit the field.").describe("[REQUIRED] Narrative session summary (5-15 lines markdown). Use real newlines, NOT literal backslash-n."),
+        startup_text: external_exports3.string().min(1, "startup_text is REQUIRED \u2014 pass ready-to-paste text the user will hand to the next session. Do not omit the field.").describe("[REQUIRED] Ready-to-paste startup text for the next session")
       },
       async (args2) => {
         const sid = getOwnedSessionIdForLogging();
@@ -40273,7 +41311,7 @@ ${lines.join("\n")}` }] };
           source: "agent"
         });
         const { appendFileSync: appendFileSync5 } = await import("node:fs");
-        const { join: join33 } = await import("node:path");
+        const { join: join38 } = await import("node:path");
         const { AXME_CODE_DIR: AXME_CODE_DIR2 } = await Promise.resolve().then(() => (init_types(), types_exports));
         const isoDate = (/* @__PURE__ */ new Date()).toISOString().slice(0, 16).replace("T", " ");
         const shortId = sid.slice(0, 8);
@@ -40283,7 +41321,7 @@ ${args2.worklog_entry}
 
 `;
         try {
-          appendFileSync5(join33(targetPath, AXME_CODE_DIR2, "worklog.md"), worklogEntry);
+          appendFileSync5(join38(targetPath, AXME_CODE_DIR2, "worklog.md"), worklogEntry);
         } catch {
         }
         const { loadSession: loadSession2, writeSession: writeSession2 } = await Promise.resolve().then(() => (init_sessions(), sessions_exports));
@@ -40335,13 +41373,291 @@ ${args2.worklog_entry}
   }
 });
 
+// src/hooks/adapters/cursor.ts
+var cursor_exports = {};
+__export(cursor_exports, {
+  cursorInputAdapter: () => cursorInputAdapter,
+  cursorOutputAdapter: () => cursorOutputAdapter
+});
+function asString(v) {
+  return typeof v === "string" ? v : void 0;
+}
+function asObject(v) {
+  return v && typeof v === "object" && !Array.isArray(v) ? v : void 0;
+}
+function normalizeCursorToolName(name) {
+  if (!name) return name;
+  if (name === "Shell") return "Bash";
+  return name;
+}
+var cursorInputAdapter, cursorOutputAdapter;
+var init_cursor = __esm({
+  "src/hooks/adapters/cursor.ts"() {
+    "use strict";
+    cursorInputAdapter = {
+      parse(raw, kind) {
+        const obj = raw && typeof raw === "object" ? raw : {};
+        const toolName = normalizeCursorToolName(asString(obj.tool_name));
+        const toolInput = asObject(obj.tool_input);
+        const sessionId = asString(obj.conversation_id) ?? asString(obj.session_id);
+        let transcriptPath;
+        if (obj.transcript_path === null) transcriptPath = null;
+        else transcriptPath = asString(obj.transcript_path);
+        const reason = kind === "sessionEnd" ? asString(obj.reason) : void 0;
+        return {
+          kind,
+          ide: "cursor",
+          toolName,
+          toolInput,
+          sessionId,
+          transcriptPath,
+          reason,
+          raw: obj
+        };
+      }
+    };
+    cursorOutputAdapter = {
+      emitDeny(reason, _kind) {
+        const message = `[AXME Safety] ${reason}`;
+        const output = {
+          permission: "deny",
+          user_message: message,
+          agent_message: message
+        };
+        return { stdout: JSON.stringify(output), exitCode: 2 };
+      }
+    };
+  }
+});
+
+// src/hooks/adapters/claude-code.ts
+var claude_code_exports = {};
+__export(claude_code_exports, {
+  claudeCodeInputAdapter: () => claudeCodeInputAdapter,
+  claudeCodeOutputAdapter: () => claudeCodeOutputAdapter
+});
+function pascalCaseFor(kind) {
+  switch (kind) {
+    case "preToolUse":
+      return "PreToolUse";
+    case "postToolUse":
+      return "PostToolUse";
+    case "sessionEnd":
+      return "SessionEnd";
+  }
+}
+var claudeCodeInputAdapter, claudeCodeOutputAdapter;
+var init_claude_code = __esm({
+  "src/hooks/adapters/claude-code.ts"() {
+    "use strict";
+    claudeCodeInputAdapter = {
+      parse(raw, kind) {
+        const obj = raw && typeof raw === "object" ? raw : {};
+        const toolName = typeof obj.tool_name === "string" ? obj.tool_name : void 0;
+        const toolInput = obj.tool_input && typeof obj.tool_input === "object" ? obj.tool_input : void 0;
+        const sessionId = typeof obj.session_id === "string" ? obj.session_id : void 0;
+        const transcriptPath = typeof obj.transcript_path === "string" ? obj.transcript_path : void 0;
+        return {
+          kind,
+          ide: "claude-code",
+          toolName,
+          toolInput,
+          sessionId,
+          transcriptPath,
+          raw: obj
+        };
+      }
+    };
+    claudeCodeOutputAdapter = {
+      emitDeny(reason, kind) {
+        const output = {
+          hookSpecificOutput: {
+            hookEventName: pascalCaseFor(kind),
+            permissionDecision: "deny",
+            permissionDecisionReason: `[AXME Safety] ${reason}`
+          }
+        };
+        return { stdout: JSON.stringify(output), exitCode: 0 };
+      }
+    };
+  }
+});
+
+// src/self-test.ts
+var self_test_exports = {};
+__export(self_test_exports, {
+  runSelfTest: () => runSelfTest
+});
+import { mkdtempSync, rmSync as rmSync2, existsSync as existsSync15, readFileSync as readFileSync16 } from "node:fs";
+import { tmpdir } from "node:os";
+import { join as join28 } from "node:path";
+import { spawn as spawn2 } from "node:child_process";
+function record2(name, ok, detail) {
+  results.push({ name, ok, detail });
+  const icon = ok ? "\u2713" : "\u2717";
+  process.stdout.write(`  ${icon} ${name.padEnd(28)} ${detail}
+`);
+}
+async function checkStorageWrite() {
+  const tmpDir = mkdtempSync(join28(tmpdir(), "axme-selftest-"));
+  try {
+    const { atomicWrite: atomicWrite2 } = await Promise.resolve().then(() => (init_engine(), engine_exports));
+    const target = join28(tmpDir, ".axme-code", "memory", "patterns", "selftest.md");
+    atomicWrite2(target, "selftest content\n");
+    if (!existsSync15(target)) {
+      record2("storage write", false, "atomicWrite returned but file missing");
+      return;
+    }
+    const back = readFileSync16(target, "utf-8");
+    if (back !== "selftest content\n") {
+      record2("storage write", false, `content mismatch: ${JSON.stringify(back.slice(0, 40))}`);
+      return;
+    }
+    record2("storage write", true, `${target}`);
+  } catch (err) {
+    record2("storage write", false, err.message);
+  } finally {
+    rmSync2(tmpDir, { recursive: true, force: true });
+  }
+}
+async function checkHookParseAndDeny() {
+  try {
+    const { cursorInputAdapter: cursorInputAdapter2, cursorOutputAdapter: cursorOutputAdapter2 } = await Promise.resolve().then(() => (init_cursor(), cursor_exports));
+    const { claudeCodeInputAdapter: claudeCodeInputAdapter2, claudeCodeOutputAdapter: claudeCodeOutputAdapter2 } = await Promise.resolve().then(() => (init_claude_code(), claude_code_exports));
+    const cursorEvent = cursorInputAdapter2.parse(
+      {
+        cursor_version: "1.7",
+        conversation_id: "selftest",
+        workspace_roots: ["/tmp"],
+        tool_name: "Shell",
+        tool_input: { command: "git push --force origin main" }
+      },
+      "preToolUse"
+    );
+    if (cursorEvent.toolName !== "Bash") {
+      record2("hook parse (Cursor)", false, `expected toolName=Bash, got=${cursorEvent.toolName}`);
+      return;
+    }
+    if (cursorEvent.ide !== "cursor") {
+      record2("hook parse (Cursor)", false, `expected ide=cursor, got=${cursorEvent.ide}`);
+      return;
+    }
+    record2("hook parse (Cursor)", true, "Shell\u2192Bash + ide=cursor");
+    const cursorDeny = cursorOutputAdapter2.emitDeny("test deny", "preToolUse");
+    const cursorJson = JSON.parse(cursorDeny.stdout);
+    if (cursorDeny.exitCode !== 2 || cursorJson.permission !== "deny" || !cursorJson.user_message.includes("[AXME Safety]")) {
+      record2("hook deny (Cursor)", false, `exit=${cursorDeny.exitCode}, json=${cursorDeny.stdout.slice(0, 100)}`);
+      return;
+    }
+    record2("hook deny (Cursor)", true, `exit 2 + permission:deny + [AXME Safety]`);
+    const claudeEvent = claudeCodeInputAdapter2.parse(
+      { tool_name: "Bash", tool_input: { command: "git push --force origin main" }, session_id: "claude-x" },
+      "preToolUse"
+    );
+    if (claudeEvent.toolName !== "Bash" || claudeEvent.ide !== "claude-code") {
+      record2("hook parse (Claude)", false, `tool=${claudeEvent.toolName} ide=${claudeEvent.ide}`);
+      return;
+    }
+    record2("hook parse (Claude)", true, "Bash + ide=claude-code");
+    const claudeDeny = claudeCodeOutputAdapter2.emitDeny("test deny", "preToolUse");
+    const claudeJson = JSON.parse(claudeDeny.stdout);
+    if (claudeDeny.exitCode !== 0 || claudeJson.hookSpecificOutput?.permissionDecision !== "deny" || !String(claudeJson.hookSpecificOutput?.permissionDecisionReason ?? "").includes("[AXME Safety]")) {
+      record2("hook deny (Claude)", false, `exit=${claudeDeny.exitCode}, json=${claudeDeny.stdout.slice(0, 100)}`);
+      return;
+    }
+    record2("hook deny (Claude)", true, "exit 0 + hookSpecificOutput.permissionDecision:deny");
+  } catch (err) {
+    record2("hook parse/deny", false, err.message);
+  }
+}
+async function checkMcpServerBoot(binaryPath) {
+  const isWindows = process.platform === "win32";
+  return new Promise((resolve9) => {
+    const child = isWindows ? spawn2(process.execPath, [binaryPath, "serve"], { stdio: ["pipe", "pipe", "pipe"] }) : spawn2(binaryPath, ["serve"], { stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let resolved = false;
+    const finish = (ok, detail) => {
+      if (resolved) return;
+      resolved = true;
+      try {
+        child.kill();
+      } catch {
+      }
+      record2("MCP server boot", ok, detail);
+      resolve9();
+    };
+    const timer = setTimeout(() => finish(false, "no response after 5s"), 5e3);
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      if (stdout.includes('"protocolVersion"')) {
+        clearTimeout(timer);
+        finish(true, "stdio handshake ok");
+      }
+    });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      finish(false, err.message);
+    });
+    child.on("exit", (code) => {
+      if (resolved) return;
+      clearTimeout(timer);
+      finish(false, `exited prematurely (code ${code})`);
+    });
+    child.stdin.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "selftest", version: "0.0.2" } }
+      }) + "\n"
+    );
+  });
+}
+async function runSelfTest() {
+  process.stdout.write("axme-code self-test\n");
+  process.stdout.write("====================\n\n");
+  await checkStorageWrite();
+  await checkHookParseAndDeny();
+  const selfPath = process.argv[1];
+  if (selfPath && existsSync15(selfPath)) {
+    await checkMcpServerBoot(selfPath);
+  } else {
+    record2("MCP server boot", false, "cannot locate own binary at process.argv[1]");
+  }
+  const failed = results.filter((r) => !r.ok);
+  process.stdout.write("\n");
+  if (failed.length === 0) {
+    process.stdout.write(`All ${results.length} checks passed.
+`);
+    return 0;
+  }
+  process.stdout.write(`${failed.length} of ${results.length} checks FAILED:
+`);
+  for (const f of failed) {
+    process.stdout.write(`  - ${f.name}: ${f.detail}
+`);
+  }
+  return 1;
+}
+var results;
+var init_self_test = __esm({
+  "src/self-test.ts"() {
+    "use strict";
+    results = [];
+  }
+});
+
 // src/hooks/pre-tool-use.ts
 var pre_tool_use_exports = {};
 __export(pre_tool_use_exports, {
   runPreToolUseHook: () => runPreToolUseHook
 });
-import { dirname as dirname5, join as join26, resolve as resolve7 } from "node:path";
-import { existsSync as existsSync13 } from "node:fs";
+import { dirname as dirname7, join as join29, resolve as resolve7 } from "node:path";
+import { existsSync as existsSync16 } from "node:fs";
+function adaptersFor(ide) {
+  if (ide === "cursor") return { input: cursorInputAdapter, output: cursorOutputAdapter };
+  return { input: claudeCodeInputAdapter, output: claudeCodeOutputAdapter };
+}
 function splitCommandSegments(command2) {
   const segments = [];
   let current = "";
@@ -40387,40 +41703,36 @@ function splitCommandSegments(command2) {
   if (current.trim()) segments.push(current);
   return segments;
 }
-function deny(reason) {
-  const output = {
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "deny",
-      permissionDecisionReason: `[AXME Safety] ${reason}`
-    }
-  };
-  process.stdout.write(JSON.stringify(output));
+function deny(reason, output) {
+  const result = output.emitDeny(reason, "preToolUse");
+  process.stdout.write(result.stdout);
+  return result.exitCode;
 }
 function findContainingRepo(filePath, workspaceRoot) {
   let dir = resolve7(filePath);
   try {
-    const stat = existsSync13(dir);
+    const stat = existsSync16(dir);
     if (!stat) {
-      dir = dirname5(dir);
+      dir = dirname7(dir);
     }
   } catch {
-    dir = dirname5(dir);
+    dir = dirname7(dir);
   }
   const rootResolved = resolve7(workspaceRoot);
   while (dir.startsWith(rootResolved) && dir !== rootResolved) {
-    if (existsSync13(join26(dir, ".git"))) return dir;
-    const parent = dirname5(dir);
+    if (existsSync16(join29(dir, ".git"))) return dir;
+    const parent = dirname7(dir);
     if (parent === dir) break;
     dir = parent;
   }
   return rootResolved;
 }
-function handlePreToolUse(sessionOrigin, event) {
-  const { tool_name, tool_input } = event;
-  if (!pathExists(join26(sessionOrigin, AXME_CODE_DIR))) return;
-  if (event.session_id && event.transcript_path) {
-    ensureAxmeSessionForClaude(sessionOrigin, event.session_id, event.transcript_path, tool_name);
+function handlePreToolUse(sessionOrigin, event, output) {
+  const tool_name = event.toolName ?? "";
+  const tool_input = event.toolInput ?? {};
+  if (!pathExists(join29(sessionOrigin, AXME_CODE_DIR))) return 0;
+  if (event.sessionId && event.transcriptPath) {
+    ensureAxmeSessionForClaude(sessionOrigin, event.sessionId, event.transcriptPath, tool_name, event.ide);
   }
   const workspaceInfo = detectWorkspace(sessionOrigin);
   const isWorkspace2 = workspaceInfo.type !== "single";
@@ -40473,24 +41785,35 @@ function handlePreToolUse(sessionOrigin, event) {
   }
   if (!verdict.allowed) {
     try {
-      const mapping = event.session_id ? readClaudeSessionMapping(sessionOrigin, event.session_id) : null;
+      const mapping = event.sessionId ? readClaudeSessionMapping(sessionOrigin, event.sessionId) : null;
       const axmeSessionId = mapping ?? "unknown";
       const target = tool_name === "Bash" ? (tool_input.command ?? "").slice(0, 120) : tool_input.file_path || tool_input.path || "";
       logSafetyBlock(sessionOrigin, axmeSessionId, tool_name, target, "safety_rule", verdict.reason);
     } catch {
     }
-    deny(verdict.reason);
+    return deny(verdict.reason, output);
   }
+  return 0;
 }
-async function runPreToolUseHook(workspacePath) {
-  if (!workspacePath) workspacePath = process.cwd();
-  if (!workspacePath) return;
+async function runPreToolUseHook(workspacePath, ide = "claude-code") {
   if (process.env.AXME_SKIP_HOOKS === "1") return;
   try {
     const chunks = [];
     for await (const chunk of process.stdin) chunks.push(chunk);
-    const input = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
-    handlePreToolUse(workspacePath, input);
+    const raw = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
+    if (!workspacePath) {
+      const roots = raw?.workspace_roots;
+      if (Array.isArray(roots) && typeof roots[0] === "string") {
+        workspacePath = roots[0];
+      } else {
+        workspacePath = process.cwd();
+      }
+    }
+    if (!workspacePath) return;
+    const adapters = adaptersFor(ide);
+    const event = adapters.input.parse(raw, "preToolUse");
+    const exitCode = handlePreToolUse(workspacePath, event, adapters.output);
+    if (exitCode !== 0) process.exit(exitCode);
   } catch (err) {
     try {
       const { sendTelemetryBlocking: sendTelemetryBlocking2, classifyError: classifyError2 } = await Promise.resolve().then(() => (init_telemetry(), telemetry_exports));
@@ -40508,6 +41831,8 @@ var init_pre_tool_use = __esm({
     init_worklog();
     init_workspace_detector();
     init_types();
+    init_claude_code();
+    init_cursor();
   }
 });
 
@@ -40516,15 +41841,21 @@ var post_tool_use_exports = {};
 __export(post_tool_use_exports, {
   runPostToolUseHook: () => runPostToolUseHook
 });
-import { join as join27 } from "node:path";
+import { join as join30 } from "node:path";
+function inputAdapterFor(ide) {
+  return ide === "cursor" ? cursorInputAdapter : claudeCodeInputAdapter;
+}
 function handlePostToolUse(workspacePath, event) {
-  const { tool_name, tool_input } = event;
-  if (!pathExists(join27(workspacePath, AXME_CODE_DIR))) return;
-  if (!event.session_id || !event.transcript_path) return;
+  const tool_name = event.toolName ?? "";
+  const tool_input = event.toolInput ?? {};
+  if (!pathExists(join30(workspacePath, AXME_CODE_DIR))) return;
+  if (!event.sessionId || !event.transcriptPath) return;
   const axmeSessionId = ensureAxmeSessionForClaude(
     workspacePath,
-    event.session_id,
-    event.transcript_path
+    event.sessionId,
+    event.transcriptPath,
+    void 0,
+    event.ide
   );
   if (!["Edit", "Write", "NotebookEdit"].includes(tool_name)) return;
   const filePath = tool_input.file_path || tool_input.path;
@@ -40532,15 +41863,23 @@ function handlePostToolUse(workspacePath, event) {
   if (filePath.includes(AXME_CODE_DIR)) return;
   trackFileChanged(workspacePath, axmeSessionId, filePath);
 }
-async function runPostToolUseHook(workspacePath) {
-  if (!workspacePath) workspacePath = process.cwd();
-  if (!workspacePath) return;
+async function runPostToolUseHook(workspacePath, ide = "claude-code") {
   if (process.env.AXME_SKIP_HOOKS === "1") return;
   try {
     const chunks = [];
     for await (const chunk of process.stdin) chunks.push(chunk);
-    const input = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
-    handlePostToolUse(workspacePath, input);
+    const raw = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
+    if (!workspacePath) {
+      const roots = raw?.workspace_roots;
+      if (Array.isArray(roots) && typeof roots[0] === "string") {
+        workspacePath = roots[0];
+      } else {
+        workspacePath = process.cwd();
+      }
+    }
+    if (!workspacePath) return;
+    const event = inputAdapterFor(ide).parse(raw, "postToolUse");
+    handlePostToolUse(workspacePath, event);
   } catch (err) {
     try {
       const { sendTelemetryBlocking: sendTelemetryBlocking2, classifyError: classifyError2 } = await Promise.resolve().then(() => (init_telemetry(), telemetry_exports));
@@ -40555,6 +41894,33 @@ var init_post_tool_use = __esm({
     init_sessions();
     init_engine();
     init_types();
+    init_claude_code();
+    init_cursor();
+  }
+});
+
+// src/utils/auditor-mode.ts
+import { existsSync as existsSync17, readFileSync as readFileSync17, writeFileSync as writeFileSync8, mkdirSync as mkdirSync6, chmodSync as chmodSync4 } from "node:fs";
+import { homedir as homedir8 } from "node:os";
+import { dirname as dirname8, join as join31 } from "node:path";
+function auditorModePath() {
+  return join31(homedir8(), ".config", "axme-code", "auditor-mode");
+}
+function loadAuditorMode() {
+  const p = auditorModePath();
+  if (!existsSync17(p)) return "background";
+  try {
+    const raw = readFileSync17(p, "utf-8").trim();
+    return VALID.includes(raw) ? raw : "background";
+  } catch {
+    return "background";
+  }
+}
+var VALID;
+var init_auditor_mode = __esm({
+  "src/utils/auditor-mode.ts"() {
+    "use strict";
+    VALID = ["cooperative", "background"];
   }
 });
 
@@ -40563,35 +41929,50 @@ var session_end_exports = {};
 __export(session_end_exports, {
   runSessionEndHook: () => runSessionEndHook
 });
-import { join as join28 } from "node:path";
-function handleSessionEnd(workspacePath, input) {
-  if (!pathExists(join28(workspacePath, AXME_CODE_DIR))) return;
-  if (!input.session_id) return;
-  let axmeSessionId = readClaudeSessionMapping(workspacePath, input.session_id);
-  if (!axmeSessionId && input.transcript_path) {
+import { join as join32 } from "node:path";
+function inputAdapterFor2(ide) {
+  return ide === "cursor" ? cursorInputAdapter : claudeCodeInputAdapter;
+}
+function handleSessionEnd(workspacePath, event) {
+  if (!pathExists(join32(workspacePath, AXME_CODE_DIR))) return;
+  const auditorMode = loadAuditorMode();
+  if (auditorMode !== "background") return;
+  if (!event.sessionId) return;
+  let axmeSessionId = readClaudeSessionMapping(workspacePath, event.sessionId);
+  if (!axmeSessionId && event.transcriptPath) {
     axmeSessionId = ensureAxmeSessionForClaude(
       workspacePath,
-      input.session_id,
-      input.transcript_path
+      event.sessionId,
+      event.transcriptPath,
+      void 0,
+      event.ide
     );
   }
   if (!axmeSessionId) return;
-  spawnDetachedAuditWorker(workspacePath, axmeSessionId);
-  clearClaudeSessionMapping(workspacePath, input.session_id);
+  spawnDetachedAuditWorker(workspacePath, axmeSessionId, event.ide);
+  clearClaudeSessionMapping(workspacePath, event.sessionId);
 }
-async function runSessionEndHook(workspacePath) {
-  if (!workspacePath) workspacePath = process.cwd();
-  if (!workspacePath) return;
+async function runSessionEndHook(workspacePath, ide = "claude-code") {
   if (process.env.AXME_SKIP_HOOKS === "1") return;
   try {
     const chunks = [];
     for await (const chunk of process.stdin) chunks.push(chunk);
-    let input = {};
+    let raw = {};
     try {
-      input = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
+      raw = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
     } catch {
     }
-    handleSessionEnd(workspacePath, input);
+    if (!workspacePath) {
+      const roots = raw?.workspace_roots;
+      if (Array.isArray(roots) && typeof roots[0] === "string") {
+        workspacePath = roots[0];
+      } else {
+        workspacePath = process.cwd();
+      }
+    }
+    if (!workspacePath) return;
+    const event = inputAdapterFor2(ide).parse(raw, "sessionEnd");
+    handleSessionEnd(workspacePath, event);
   } catch (err) {
     try {
       const { sendTelemetryBlocking: sendTelemetryBlocking2, classifyError: classifyError2 } = await Promise.resolve().then(() => (init_telemetry(), telemetry_exports));
@@ -40605,13 +41986,16 @@ var init_session_end = __esm({
     "use strict";
     init_sessions();
     init_audit_spawner();
+    init_auditor_mode();
     init_engine();
     init_types();
+    init_claude_code();
+    init_cursor();
   }
 });
 
 // src/transcript-parser.ts
-import { readFileSync as readFileSync15, existsSync as existsSync14 } from "node:fs";
+import { readFileSync as readFileSync18, existsSync as existsSync18 } from "node:fs";
 function shortenToolInput(name, input) {
   if (!input || typeof input !== "object") return "";
   switch (name) {
@@ -40647,13 +42031,13 @@ function shortenToolInput(name, input) {
     }
   }
 }
-function parseTranscriptFromOffset(path, startOffset = 0) {
-  if (!existsSync14(path)) {
+function parseTranscriptFromOffset(path, startOffset = 0, ide = "claude-code") {
+  if (!existsSync18(path)) {
     return { turns: [], endOffset: startOffset, bytesRead: 0, fileSize: 0, bashCommands: [] };
   }
   let buffer;
   try {
-    buffer = readFileSync15(path);
+    buffer = readFileSync18(path);
   } catch {
     return { turns: [], endOffset: startOffset, bytesRead: 0, fileSize: 0, bashCommands: [] };
   }
@@ -40676,7 +42060,7 @@ function parseTranscriptFromOffset(path, startOffset = 0) {
     }
     const msg = event.message;
     if (!msg || !Array.isArray(msg.content)) continue;
-    const role = msg.role;
+    const role = (ide === "cursor" ? event.role : msg.role) ?? msg.role ?? event.role;
     if (role !== "user" && role !== "assistant") continue;
     for (const block of msg.content) {
       const btype = block.type;
@@ -40803,7 +42187,7 @@ function parseAndRenderTranscripts(refs, startOffsets) {
   if (refs.length === 1) {
     const ref = refs[0];
     const start = startOffsets?.[ref.id] ?? 0;
-    const slice = parseTranscriptFromOffset(ref.transcriptPath, start);
+    const slice = parseTranscriptFromOffset(ref.transcriptPath, start, ref.ide ?? "claude-code");
     const rendered = renderConversation(slice.turns);
     endOffsets[ref.id] = slice.endOffset;
     bytesRead[ref.id] = slice.bytesRead;
@@ -40824,7 +42208,7 @@ function parseAndRenderTranscripts(refs, startOffsets) {
   const allBashCommands = [];
   for (const ref of refs) {
     const start = startOffsets?.[ref.id] ?? 0;
-    const slice = parseTranscriptFromOffset(ref.transcriptPath, start);
+    const slice = parseTranscriptFromOffset(ref.transcriptPath, start, ref.ide ?? "claude-code");
     endOffsets[ref.id] = slice.endOffset;
     bytesRead[ref.id] = slice.bytesRead;
     if (slice.turns.length === 0) {
@@ -40934,7 +42318,7 @@ __export(session_auditor_exports, {
   parseAuditOutput: () => parseAuditOutput,
   runSessionAudit: () => runSessionAudit
 });
-import { basename as basename7 } from "node:path";
+import { basename as basename7, isAbsolute, join as join33 } from "node:path";
 function buildExistingContext(sessionOrigin, workspaceInfo) {
   const paths = [
     { label: workspaceInfo && workspaceInfo.root === sessionOrigin ? "workspace" : basename7(sessionOrigin), path: sessionOrigin }
@@ -40942,7 +42326,8 @@ function buildExistingContext(sessionOrigin, workspaceInfo) {
   if (workspaceInfo && workspaceInfo.type !== "single") {
     const seen = /* @__PURE__ */ new Set([sessionOrigin]);
     for (const proj of workspaceInfo.projects) {
-      const absPath = proj.path.startsWith("/") ? proj.path : `${workspaceInfo.root}/${proj.path.replace(/^\.\/?/, "")}`;
+      const cleanRel = proj.path.replace(/^\.[\\/]?/, "");
+      const absPath = isAbsolute(proj.path) ? proj.path : join33(workspaceInfo.root, cleanRel);
       if (seen.has(absPath)) continue;
       seen.add(absPath);
       paths.push({ label: proj.name, path: absPath });
@@ -40959,7 +42344,7 @@ function buildExistingContext(sessionOrigin, workspaceInfo) {
       const decCount = listDecisions(path).length;
       const memCount = listMemories(path).length;
       if (decCount === 0 && memCount === 0) continue;
-      lines.push(`- [${label}] ${path}/.axme-code/   (${decCount} decisions, ${memCount} memories, plus safety/rules.yaml)`);
+      lines.push(`- [${label}] ${join33(path, ".axme-code")}   (${decCount} decisions, ${memCount} memories, plus safety/rules.yaml)`);
     } catch {
     }
   }
@@ -40986,8 +42371,9 @@ function buildWorkspaceContext(sessionOrigin, filesChanged, workspaceInfo) {
     for (const f of filesChanged) {
       let matchedRepo = null;
       for (const proj of workspaceInfo.projects) {
-        const projAbs = proj.path.startsWith("/") ? proj.path : `${workspaceInfo.root}/${proj.path.replace(/^\.\/?/, "")}`;
-        if (f.startsWith(projAbs + "/") || f === projAbs) {
+        const cleanRel = proj.path.replace(/^\.[\\/]?/, "");
+        const projAbs = isAbsolute(proj.path) ? proj.path : join33(workspaceInfo.root, cleanRel);
+        if (f === projAbs || f.startsWith(projAbs + "/") || f.startsWith(projAbs + "\\")) {
           matchedRepo = proj.name;
           break;
         }
@@ -41101,7 +42487,7 @@ ${opts.sessionEvents}
   };
 }
 async function runSingleAuditCall(opts) {
-  const sdk = await import("@anthropic-ai/claude-agent-sdk");
+  const sdk = await createAgentSdk("auditor", { cwd: opts.sessionOrigin });
   const claudePath = claudePathForSdk();
   const queryOpts = {
     cwd: opts.sessionOrigin,
@@ -41284,7 +42670,7 @@ function truncateExistingContext(context, maxChars) {
   return [...headerLines, ...kept, trimNote].join("\n");
 }
 async function formatAuditResult(freeTextAnalysis, model, sessionOrigin) {
-  const sdk = await import("@anthropic-ai/claude-agent-sdk");
+  const sdk = await createAgentSdk("auditor", { cwd: sessionOrigin });
   const formatPrompt = `You are a formatting assistant. Convert the following free-text audit analysis into a JSON object.
 
 OUTPUT RULES:
@@ -41555,6 +42941,7 @@ var init_session_auditor = __esm({
     init_types();
     init_cost_extractor();
     init_agent_options();
+    init_agent_sdk();
     init_memory();
     init_decisions();
     init_memory();
@@ -41839,15 +43226,15 @@ __export(kb_audit_exports, {
   resetKbAuditCounter: () => resetKbAuditCounter,
   writeKbAuditReport: () => writeKbAuditReport
 });
-import { join as join29 } from "node:path";
+import { join as join34 } from "node:path";
 function counterPath(projectPath) {
-  return join29(projectPath, AXME_CODE_DIR, KB_AUDIT_DIR, COUNTER_FILE);
+  return join34(projectPath, AXME_CODE_DIR, KB_AUDIT_DIR, COUNTER_FILE);
 }
 function reportsDir(projectPath) {
-  return join29(projectPath, AXME_CODE_DIR, KB_AUDIT_DIR);
+  return join34(projectPath, AXME_CODE_DIR, KB_AUDIT_DIR);
 }
 function incrementKbAuditCounter(projectPath) {
-  const dir = join29(projectPath, AXME_CODE_DIR, KB_AUDIT_DIR);
+  const dir = join34(projectPath, AXME_CODE_DIR, KB_AUDIT_DIR);
   ensureDir(dir);
   const existing = readJson(counterPath(projectPath));
   const counter = existing ?? {
@@ -41862,7 +43249,7 @@ function incrementKbAuditCounter(projectPath) {
   return { count: counter.count, recommendAudit };
 }
 function resetKbAuditCounter(projectPath) {
-  const dir = join29(projectPath, AXME_CODE_DIR, KB_AUDIT_DIR);
+  const dir = join34(projectPath, AXME_CODE_DIR, KB_AUDIT_DIR);
   ensureDir(dir);
   const counter = {
     count: 0,
@@ -41878,7 +43265,7 @@ function writeKbAuditReport(projectPath, report) {
   const dir = reportsDir(projectPath);
   ensureDir(dir);
   const date5 = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const path = join29(dir, `${date5}-report.md`);
+  const path = join34(dir, `${date5}-report.md`);
   atomicWrite(path, report);
   return path;
 }
@@ -41908,7 +43295,7 @@ var session_cleanup_exports = {};
 __export(session_cleanup_exports, {
   runSessionCleanup: () => runSessionCleanup
 });
-import { join as join30 } from "node:path";
+import { join as join35 } from "node:path";
 import { appendFileSync as appendFileSync3 } from "node:fs";
 function resolveScopeRoutes(scope, workspacePath, workspaceRoot) {
   const isAll = !scope || scope.length === 0 || scope.length === 1 && scope[0] === "all";
@@ -41917,8 +43304,8 @@ function resolveScopeRoutes(scope, workspacePath, workspaceRoot) {
   const repos = [];
   for (const s of scope) {
     if (s === "all") continue;
-    const abs = join30(workspaceRoot, s);
-    if (pathExists(join30(abs, ".axme-code")) || pathExists(join30(abs, ".git"))) {
+    const abs = join35(workspaceRoot, s);
+    if (pathExists(join35(abs, ".axme-code")) || pathExists(join35(abs, ".git"))) {
       repos.push(abs);
     }
   }
@@ -41987,7 +43374,7 @@ async function runSessionCleanup(workspacePath, sessionId) {
     oracleRescanned: false,
     costUsd: 0
   };
-  if (!pathExists(join30(workspacePath, AXME_CODE_DIR))) {
+  if (!pathExists(join35(workspacePath, AXME_CODE_DIR))) {
     return { ...base, skipped: "no-storage" };
   }
   const session = loadSession(workspacePath, sessionId);
@@ -42293,7 +43680,7 @@ async function runSessionCleanup(workspacePath, sessionId) {
 ${audit.sessionSummary}
 
 `;
-          appendFileSync3(join30(workspacePath, AXME_CODE_DIR, "worklog.md"), entry);
+          appendFileSync3(join35(workspacePath, AXME_CODE_DIR, "worklog.md"), entry);
           result.worklogSummary = true;
         } catch {
         }
@@ -42328,7 +43715,7 @@ ${audit.sessionSummary}
       const shouldRescan = deterministicRescan || audit.oracleNeedsRescan;
       if (shouldRescan && filesChanged.length > 0) {
         try {
-          const { runOracleScan: runOracleScan2 } = await Promise.resolve().then(() => (init_oracle2(), oracle_exports));
+          const { runOracleScan: runOracleScan2 } = await Promise.resolve().then(() => (init_oracle2(), oracle_exports2));
           const oracleResult = await runOracleScan2({ projectPath: workspacePath });
           writeOracleFiles(workspacePath, oracleResult.files);
           result.oracleRescanned = true;
@@ -42512,8 +43899,8 @@ __export(cleanup_exports, {
   cleanupLegacyArtifacts: () => cleanupLegacyArtifacts,
   normalizeDecisions: () => normalizeDecisions
 });
-import { readdirSync as readdirSync11, readFileSync as readFileSync16, writeFileSync as writeFileSync5, mkdirSync as mkdirSync4, copyFileSync, rmSync as rmSync2 } from "node:fs";
-import { join as join31, basename as basename8 } from "node:path";
+import { readdirSync as readdirSync11, readFileSync as readFileSync19, writeFileSync as writeFileSync9, mkdirSync as mkdirSync7, copyFileSync, rmSync as rmSync3 } from "node:fs";
+import { join as join36, basename as basename8 } from "node:path";
 function cleanupLegacyArtifacts(projectPath, opts) {
   const log = opts.onProgress ?? (() => {
   });
@@ -42523,53 +43910,53 @@ function cleanupLegacyArtifacts(projectPath, opts) {
     legacyDirsRemoved: [],
     backupPath: null
   };
-  const acDir = join31(projectPath, AXME_CODE_DIR);
+  const acDir = join36(projectPath, AXME_CODE_DIR);
   if (!pathExists(acDir)) {
     log("No .axme-code/ found, nothing to clean.");
     return result;
   }
-  const backupDir = join31(acDir, "backups", `legacy-${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19)}`);
+  const backupDir = join36(acDir, "backups", `legacy-${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19)}`);
   if (!opts.dryRun) {
-    mkdirSync4(backupDir, { recursive: true });
+    mkdirSync7(backupDir, { recursive: true });
     result.backupPath = backupDir;
   }
-  const sessionsDir = join31(acDir, "sessions");
+  const sessionsDir = join36(acDir, "sessions");
   if (pathExists(sessionsDir)) {
     for (const entry of readdirSync11(sessionsDir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
-      const metaPath = join31(sessionsDir, entry.name, "meta.json");
+      const metaPath = join36(sessionsDir, entry.name, "meta.json");
       const session = readJson(metaPath);
       if (!session) continue;
       if (session.origin) continue;
       if (opts.dryRun) {
         log(`  [dry-run] would delete session ${entry.name} (no origin field)`);
       } else {
-        const backupSessionDir = join31(backupDir, "sessions", entry.name);
-        mkdirSync4(backupSessionDir, { recursive: true });
+        const backupSessionDir = join36(backupDir, "sessions", entry.name);
+        mkdirSync7(backupSessionDir, { recursive: true });
         try {
-          copyFileSync(metaPath, join31(backupSessionDir, "meta.json"));
+          copyFileSync(metaPath, join36(backupSessionDir, "meta.json"));
         } catch {
         }
-        rmSync2(join31(sessionsDir, entry.name), { recursive: true, force: true });
+        rmSync3(join36(sessionsDir, entry.name), { recursive: true, force: true });
         log(`  deleted session ${entry.name} (no origin)`);
       }
       result.sessionsDeleted++;
     }
   }
-  const auditLogsDir2 = join31(acDir, "audit-logs");
+  const auditLogsDir2 = join36(acDir, "audit-logs");
   if (pathExists(auditLogsDir2)) {
     for (const file2 of readdirSync11(auditLogsDir2).filter((f) => f.endsWith(".json"))) {
-      const logPath = join31(auditLogsDir2, file2);
+      const logPath = join36(auditLogsDir2, file2);
       const auditLog = readJson(logPath);
       if (!auditLog) continue;
       if (auditLog.resume) continue;
       if (opts.dryRun) {
         log(`  [dry-run] would delete audit log ${file2} (no resume field)`);
       } else {
-        const backupLogsDir = join31(backupDir, "audit-logs");
-        mkdirSync4(backupLogsDir, { recursive: true });
+        const backupLogsDir = join36(backupDir, "audit-logs");
+        mkdirSync7(backupLogsDir, { recursive: true });
         try {
-          copyFileSync(logPath, join31(backupLogsDir, file2));
+          copyFileSync(logPath, join36(backupLogsDir, file2));
         } catch {
         }
         removeFile(logPath);
@@ -42579,8 +43966,8 @@ function cleanupLegacyArtifacts(projectPath, opts) {
     }
   }
   const legacyPaths = [
-    join31(acDir, "pending-audits"),
-    join31(acDir, "active-session")
+    join36(acDir, "pending-audits"),
+    join36(acDir, "active-session")
   ];
   for (const p of legacyPaths) {
     if (!pathExists(p)) continue;
@@ -42588,7 +43975,7 @@ function cleanupLegacyArtifacts(projectPath, opts) {
     if (opts.dryRun) {
       log(`  [dry-run] would remove legacy ${name}`);
     } else {
-      rmSync2(p, { recursive: true, force: true });
+      rmSync3(p, { recursive: true, force: true });
       log(`  removed legacy ${name}`);
     }
     result.legacyDirsRemoved.push(name);
@@ -42602,24 +43989,24 @@ function normalizeDecisions(workspacePath, opts) {
   let filesSkipped = 0;
   let locations = 0;
   const targets = [];
-  const wsDecDir = join31(workspacePath, AXME_CODE_DIR, "decisions");
+  const wsDecDir = join36(workspacePath, AXME_CODE_DIR, "decisions");
   if (pathExists(wsDecDir)) targets.push(wsDecDir);
   try {
     for (const entry of readdirSync11(workspacePath, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-      const repoDecDir = join31(workspacePath, entry.name, AXME_CODE_DIR, "decisions");
+      const repoDecDir = join36(workspacePath, entry.name, AXME_CODE_DIR, "decisions");
       if (pathExists(repoDecDir)) targets.push(repoDecDir);
     }
   } catch {
   }
   for (const decDir of targets) {
     locations++;
-    const name = decDir.split("/").slice(-3, -1).join("/");
+    const name = `${basename8(join36(decDir, "..", ".."))}/${AXME_CODE_DIR}`;
     let updated = 0;
     try {
       for (const file2 of readdirSync11(decDir).filter((f) => f.startsWith("D-") && f.endsWith(".md"))) {
-        const filePath = join31(decDir, file2);
-        const content = readFileSync16(filePath, "utf-8");
+        const filePath = join36(decDir, file2);
+        const content = readFileSync19(filePath, "utf-8");
         if (/^status:\s/m.test(content)) {
           filesSkipped++;
           continue;
@@ -42638,7 +44025,7 @@ function normalizeDecisions(workspacePath, opts) {
           insertAfter[0],
           insertAfter[0] + "\nstatus: active"
         );
-        writeFileSync5(filePath, newContent, "utf-8");
+        writeFileSync9(filePath, newContent, "utf-8");
         filesUpdated++;
         updated++;
       }
@@ -42666,7 +44053,7 @@ __export(kb_auditor_exports, {
 async function runKbAudit(opts) {
   const startTime = Date.now();
   const model = opts.model ?? DEFAULT_AUDITOR_MODEL;
-  const sdk = await import("@anthropic-ai/claude-agent-sdk");
+  const sdk = await createAgentSdk("auditor", { cwd: opts.targetPath });
   const prompt = opts.allRepos ? KB_AUDIT_PROMPT_ALL_REPOS : KB_AUDIT_PROMPT_SINGLE;
   const queryOpts = buildAgentQueryOptions(
     { cwd: opts.targetPath, model },
@@ -42719,6 +44106,7 @@ var init_kb_auditor = __esm({
     init_types();
     init_cost_extractor();
     init_agent_options();
+    init_agent_sdk();
     KB_AUDIT_PROMPT_SINGLE = `You are a knowledge base auditor for AXME Code.
 
 Your task: clean up the .axme-code/ storage in the current project directory.
@@ -42826,119 +44214,10 @@ Report summary: which repos had changes, how many decisions superseded/revoked/c
   }
 });
 
-// src/tools/search-install.ts
-var search_install_exports = {};
-__export(search_install_exports, {
-  reindexAll: () => reindexAll,
-  runConfigSetSearch: () => runConfigSetSearch
-});
-import { spawnSync } from "node:child_process";
-import { mkdirSync as mkdirSync5, existsSync as existsSync15, writeFileSync as writeFileSync6 } from "node:fs";
-function installTransformers() {
-  const dir = runtimeDir();
-  if (!existsSync15(dir)) mkdirSync5(dir, { recursive: true });
-  const pkgJson = `${dir}/package.json`;
-  if (!existsSync15(pkgJson)) {
-    writeFileSync6(pkgJson, JSON.stringify({ name: "axme-code-runtime", private: true, version: "0.0.0" }, null, 2) + "\n");
-  }
-  process.stderr.write(`AXME: installing semantic-search runtime into ${dir} (one-time, ~100 MB)...
-`);
-  const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
-  const result = spawnSync(npmCmd, [
-    "install",
-    "--prefix",
-    dir,
-    "--no-audit",
-    "--no-fund",
-    `@huggingface/transformers@${TRANSFORMERS_VERSION}`
-  ], { stdio: ["ignore", "inherit", "inherit"], shell: process.platform === "win32" });
-  if (result.error) return { ok: false, error: `npm spawn failed: ${result.error.message}` };
-  if (result.status !== 0) return { ok: false, error: `npm install exited with code ${result.status}` };
-  _resetEmbedderCache();
-  return { ok: true };
-}
-function entryText(title, body) {
-  return `${title}. ${body}`;
-}
-async function reindexAll(projectPath) {
-  if (!isRuntimeInstalled()) {
-    return {
-      ok: false,
-      error: "Embeddings runtime not installed. Run `axme-code config set context.mode search` first."
-    };
-  }
-  const embedder = await loadEmbedder();
-  if (!embedder) {
-    return { ok: false, error: "Failed to load embedder (runtime present but module did not load)." };
-  }
-  const memories = listMemories(projectPath);
-  const decisions = listDecisions(projectPath);
-  const total = memories.length + decisions.length;
-  if (total === 0) {
-    await saveEmbeddings(projectPath, []);
-    return { ok: true, indexed: 0 };
-  }
-  const records = [];
-  let processed = 0;
-  const tickEvery = Math.max(1, Math.floor(total / 20));
-  const now = Date.now();
-  for (const m of memories) {
-    const vec = await embedder.embed(entryText(m.title, m.description));
-    records.push({
-      slug: m.slug,
-      type: "memory",
-      title: m.title,
-      description: m.description,
-      mtime: now,
-      embedding: Array.from(vec)
-    });
-    processed++;
-    if (processed % tickEvery === 0) {
-      process.stderr.write(`  embedded ${processed}/${total}\r`);
-    }
-  }
-  for (const d of decisions) {
-    const vec = await embedder.embed(entryText(d.title, d.decision));
-    records.push({
-      slug: d.id,
-      type: "decision",
-      title: d.title,
-      description: d.decision,
-      mtime: now,
-      embedding: Array.from(vec)
-    });
-    processed++;
-    if (processed % tickEvery === 0) {
-      process.stderr.write(`  embedded ${processed}/${total}\r`);
-    }
-  }
-  process.stderr.write(`  embedded ${processed}/${total}
-`);
-  await saveEmbeddings(projectPath, records);
-  return { ok: true, indexed: records.length };
-}
-async function runConfigSetSearch(projectPath) {
-  if (!isRuntimeInstalled()) {
-    const installed = installTransformers();
-    if (!installed.ok) return { ok: false, error: installed.error };
-  }
-  return reindexAll(projectPath);
-}
-var TRANSFORMERS_VERSION;
-var init_search_install = __esm({
-  "src/tools/search-install.ts"() {
-    "use strict";
-    init_memory();
-    init_decisions();
-    init_embeddings();
-    TRANSFORMERS_VERSION = "^4.0.1";
-  }
-});
-
 // src/cli.ts
 init_js_yaml();
-import { resolve as resolve8, join as join32, basename as basename9 } from "node:path";
-import { writeFileSync as writeFileSync7, existsSync as existsSync16, readFileSync as readFileSync17, appendFileSync as appendFileSync4, mkdirSync as mkdirSync6 } from "node:fs";
+import { resolve as resolve8, join as join37, basename as basename9 } from "node:path";
+import { writeFileSync as writeFileSync10, existsSync as existsSync19, readFileSync as readFileSync20, appendFileSync as appendFileSync4, mkdirSync as mkdirSync8 } from "node:fs";
 
 // src/tools/init.ts
 init_engine();
@@ -43271,7 +44550,7 @@ async function initProjectWithLLM(projectPath, opts) {
       // Oracle scan
       (async () => {
         if (oracleExists(projectPath)) return { type: "oracle", skipped: true };
-        const { runOracleScan: runOracleScan2 } = await Promise.resolve().then(() => (init_oracle2(), oracle_exports));
+        const { runOracleScan: runOracleScan2 } = await Promise.resolve().then(() => (init_oracle2(), oracle_exports2));
         return { type: "oracle", result: await runOracleScan2({ projectPath, workspaceMode: opts?.workspaceMode }) };
       })(),
       // Decision scan — pass existing decisions (from presets) so scanner skips same-topic
@@ -43481,59 +44760,12 @@ init_engine();
 init_memory();
 init_auth_detect();
 init_auth_config();
-
-// src/utils/auth-prompt.ts
-import { createInterface } from "node:readline";
-function formatDetectionBlock(options) {
-  const lines = [];
-  lines.push("Detected on this machine:");
-  if (options.apiKey.present) {
-    lines.push(`  [1] Anthropic API key: ${options.apiKey.masked} (ANTHROPIC_API_KEY)`);
-  } else {
-    lines.push("  [1] Anthropic API key \u2014 not set");
-  }
-  if (options.subscription.present) {
-    const detail = options.subscription.details ? ` (${options.subscription.details})` : "";
-    lines.push(`  [2] Claude Code subscription${detail}`);
-  } else if (options.subscription.binaryFound) {
-    lines.push("  [2] Claude Code subscription \u2014 binary found but no saved login");
-    lines.push("      (run `claude` then `/login` to authenticate)");
-  } else {
-    lines.push("  [2] Claude Code subscription \u2014 claude binary not found on PATH");
-  }
-  return lines.join("\n");
-}
-function defaultChoice(options) {
-  if (options.subscription.present && !options.apiKey.present) return "subscription";
-  if (options.apiKey.present && !options.subscription.present) return "api_key";
-  return options.subscription.present ? "subscription" : "api_key";
-}
-function hasAnyAuth(options) {
-  return options.apiKey.present || options.subscription.present;
-}
-async function promptAuthChoice(options) {
-  const def = defaultChoice(options);
-  const defLabel = def === "subscription" ? "2" : "1";
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    while (true) {
-      const answer = await new Promise((resolve9) => {
-        rl.question(`Which should axme-code use? [1=api_key, 2=subscription, default ${defLabel}]: `, resolve9);
-      });
-      const trimmed = answer.trim().toLowerCase();
-      if (trimmed === "") return def;
-      if (trimmed === "1" || trimmed === "api_key" || trimmed === "key") return "api_key";
-      if (trimmed === "2" || trimmed === "subscription" || trimmed === "sub") return "subscription";
-      if (trimmed === "q" || trimmed === "quit" || trimmed === "cancel") return null;
-      process.stdout.write("  Enter 1, 2, or q to cancel.\n");
-    }
-  } finally {
-    rl.close();
-  }
-}
-
-// src/cli.ts
+init_auth_prompt();
 init_types();
+import { EventEmitter, setMaxListeners as setMaxEventTargetListeners } from "node:events";
+process.setMaxListeners(50);
+setMaxEventTargetListeners(50);
+EventEmitter.defaultMaxListeners = 50;
 var args = process.argv.slice(2);
 var command = args[0];
 if (command === "--version" || command === "-v") {
@@ -43624,21 +44856,21 @@ axme_context, axme_oracle, axme_decisions, axme_memories, axme_save_memory, axme
 axme_update_safety, axme_safety, axme_status, axme_worklog, axme_workspace
 `;
 function generateClaudeMd(projectPath, isWorkspace2) {
-  const claudeMdPath = join32(projectPath, "CLAUDE.md");
+  const claudeMdPath = join37(projectPath, "CLAUDE.md");
   const section = isWorkspace2 ? WORKSPACE_CLAUDE_MD : SINGLE_REPO_CLAUDE_MD;
-  if (existsSync16(claudeMdPath)) {
-    const content = readFileSync17(claudeMdPath, "utf-8");
+  if (existsSync19(claudeMdPath)) {
+    const content = readFileSync20(claudeMdPath, "utf-8");
     if (content.includes("## AXME Code")) {
       const sectionStart = content.indexOf("## AXME Code");
       const before = content.slice(0, sectionStart).trimEnd();
-      writeFileSync7(claudeMdPath, before ? before + "\n\n" + section : section, "utf-8");
+      writeFileSync10(claudeMdPath, before ? before + "\n\n" + section : section, "utf-8");
       console.log("  CLAUDE.md: updated AXME Code section");
     } else {
       appendFileSync4(claudeMdPath, "\n\n" + section, "utf-8");
       console.log("  CLAUDE.md: appended AXME Code section");
     }
   } else {
-    writeFileSync7(claudeMdPath, section, "utf-8");
+    writeFileSync10(claudeMdPath, section, "utf-8");
     console.log("  CLAUDE.md: created");
   }
 }
@@ -43673,6 +44905,17 @@ async function ensureAuthConfiguredForSetup() {
     console.log("  Auth selection cancelled. Heuristic fallback will be used.");
     return;
   }
+  if (choice === "cursor_sdk" && !options.cursorSdk?.present) {
+    const { promptCursorApiKey: promptCursorApiKey2 } = await Promise.resolve().then(() => (init_auth_prompt(), auth_prompt_exports));
+    const { saveCursorApiKey: saveCursorApiKey2 } = await Promise.resolve().then(() => (init_auth_config(), auth_config_exports));
+    const key = await promptCursorApiKey2();
+    if (!key) {
+      console.log("  Cursor API key paste cancelled. Auth not saved.");
+      return;
+    }
+    saveCursorApiKey2(key);
+    console.log(`  Saved Cursor API key: ~/.config/axme-code/cursor.yaml (chmod 600)`);
+  }
   saveAuthConfig(choice);
   console.log(`  Saved auth mode: ${choice} (${authConfigPath()})`);
 }
@@ -43683,8 +44926,8 @@ function generateWorkspaceYaml(workspacePath, ws) {
     manifest: ws.manifestPath,
     projects: ws.projects
   }, { lineWidth: 120 });
-  ensureDir(join32(workspacePath, AXME_CODE_DIR));
-  atomicWrite(join32(workspacePath, AXME_CODE_DIR, "workspace.yaml"), wsYaml);
+  ensureDir(join37(workspacePath, AXME_CODE_DIR));
+  atomicWrite(join37(workspacePath, AXME_CODE_DIR, "workspace.yaml"), wsYaml);
   console.log("  workspace.yaml: created");
 }
 function buildHookCommand(hookName, projectPath) {
@@ -43694,12 +44937,12 @@ function buildHookCommand(hookName, projectPath) {
   return `${q(nodeExec)} ${q(self)} hook ${hookName} --workspace ${q(projectPath)}`;
 }
 function configureHooks(projectPath) {
-  const claudeDir = join32(projectPath, ".claude");
-  const settingsPath = join32(claudeDir, "settings.json");
+  const claudeDir = join37(projectPath, ".claude");
+  const settingsPath = join37(claudeDir, "settings.json");
   let settings = {};
-  if (existsSync16(settingsPath)) {
+  if (existsSync19(settingsPath)) {
     try {
-      settings = JSON.parse(readFileSync17(settingsPath, "utf-8"));
+      settings = JSON.parse(readFileSync20(settingsPath, "utf-8"));
     } catch {
       settings = {};
     }
@@ -43737,8 +44980,8 @@ function configureHooks(projectPath) {
       timeout: 120
     }]
   });
-  mkdirSync6(claudeDir, { recursive: true });
-  writeFileSync7(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+  mkdirSync8(claudeDir, { recursive: true });
+  writeFileSync10(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
   console.log("  .claude/settings.json: hooks configured (PostToolUse + SessionEnd)");
 }
 function writeBootstrapToAxmeMemory(projectPath, isWorkspace2, repoCount) {
@@ -43762,17 +45005,38 @@ function usage() {
   console.log(`AXME Code - Persistent memory, decisions, and safety guardrails for Claude Code
 
 Usage:
-  axme-code setup [path] [--force]         Initialize project (LLM scan + .mcp.json + CLAUDE.md)
-  axme-code serve                         Start MCP server (stdio transport)
-  axme-code status [path]                 Show project status
-  axme-code auth                          Re-detect and choose auth mode (subscription/api_key)
-  axme-code auth status                   Show current auth mode + detected options
-  axme-code auth use <subscription|api_key>  Set auth mode non-interactively
-  axme-code cleanup legacy-artifacts [--dry-run]  Remove pre-PR#7 sessions/logs
-  axme-code cleanup decisions-normalize [--dry-run]  Add status:active to decisions
-  axme-code audit-kb [path] [--all-repos]             KB audit: dedup, conflicts, compaction
-  axme-code stats [path]                  Worklog statistics (sessions, costs, safety blocks)
-  axme-code help                          Show this help
+  axme-code setup [path] [--force] [--ide=<claude-code|cursor>]
+                                                Initialize project (LLM scan + .mcp.json + CLAUDE.md
+                                                for Claude Code, or .cursor/{mcp,hooks}.json + rules
+                                                /axme-code.mdc for Cursor). Defaults to claude-code.
+  axme-code serve                               Start MCP server (stdio transport)
+  axme-code self-test                           Run local healthcheck (storage write,
+                                                hook parse, MCP boot). Exits 0 on
+                                                pass, 1 on any failure. Use in CI or
+                                                from terminal when debugging install.
+  axme-code status [path]                       Show project status
+  axme-code --version | -v                      Print the installed version
+
+  axme-code config get <key>                    Read a value from .axme-code/config.yaml
+                                                (keys: context.mode, model, auditor_model, review_enabled)
+  axme-code config set context.mode <full|search>
+                                                Switch context-loading mode. 'search' installs the
+                                                semantic-search runtime (~100MB, one-time) and
+                                                builds an embeddings index of every memory + decision.
+                                                Rolls back to 'full' on install or reindex failure.
+  axme-code reindex [path]                      Force a full re-embed of all memories + decisions
+                                                into .axme-code/_index/embeddings.json (search mode only)
+
+  axme-code auth                                Re-detect and choose auth mode
+                                                (subscription / api_key / cursor_sdk)
+  axme-code auth status                         Show current auth mode + detected options
+  axme-code auth use <subscription|api_key|cursor_sdk>
+                                                Set auth mode non-interactively
+  axme-code cleanup legacy-artifacts [--dry-run]   Remove pre-PR#7 sessions/logs
+  axme-code cleanup decisions-normalize [--dry-run]   Add status:active to decisions
+  axme-code audit-kb [path] [--all-repos]       KB audit: dedup, conflicts, compaction
+  axme-code stats [path]                        Worklog statistics (sessions, costs, safety blocks)
+  axme-code help                                Show this help
 
 After setup, run 'claude' as usual. AXME tools are available automatically.`);
 }
@@ -43787,15 +45051,33 @@ async function main2() {
       const setupStartMs = Date.now();
       const forceSetup = args.includes("--force");
       const pluginMode = args.includes("--plugin") || !!process.env.CLAUDE_PLUGIN_ROOT;
-      const setupArgs = args.filter((a) => a !== "--force" && a !== "--plugin");
+      const { parseIdeFlag: parseIdeFlag2 } = await Promise.resolve().then(() => (init_ide_detect(), ide_detect_exports));
+      const ide = parseIdeFlag2(args) ?? "claude-code";
+      if (ide === "cursor" && pluginMode) {
+        console.error("Error: --ide=cursor is not supported with --plugin in this release.");
+        console.error("Run setup without --plugin (Cursor plugin packaging is a Phase 2 follow-up).");
+        process.exit(1);
+      }
+      const setupArgs = [];
+      for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === "--force" || a === "--plugin") continue;
+        if (a === "--ide") {
+          i++;
+          continue;
+        }
+        if (a.startsWith("--ide=")) continue;
+        setupArgs.push(a);
+      }
       const projectPath = resolve8(setupArgs[1] || ".");
-      const hasGitDir = existsSync16(join32(projectPath, ".git"));
+      const hasGitDir = existsSync19(join37(projectPath, ".git"));
       const ws = detectWorkspace(projectPath);
       const isWorkspace2 = hasGitDir ? false : ws.type !== "single";
-      const childRepos = isWorkspace2 ? ws.projects.filter((p) => existsSync16(join32(projectPath, p.path, ".git"))).length : 0;
+      const childRepos = isWorkspace2 ? ws.projects.filter((p) => existsSync19(join37(projectPath, p.path, ".git"))).length : 0;
       let setupOutcome = "failed";
       let setupMethod = "deterministic";
       let setupPhaseFailed = null;
+      let setupErrorClass = null;
       let setupPresetsApplied = 0;
       let setupScannersRun = 0;
       let setupScannersFailed = 0;
@@ -43809,6 +45091,7 @@ async function main2() {
             scanners_run: setupScannersRun,
             scanners_failed: setupScannersFailed,
             phase_failed: setupPhaseFailed,
+            error_class: setupErrorClass,
             presets_applied: setupPresetsApplied,
             is_workspace: isWorkspace2,
             child_repos: childRepos
@@ -43832,6 +45115,7 @@ Error: No Claude authentication found.
 `);
         setupOutcome = "failed";
         setupPhaseFailed = "auth_check";
+        setupErrorClass = "oauth_missing";
         await sendSetupTelemetry();
         process.exit(1);
       }
@@ -43877,8 +45161,9 @@ Error: No Claude authentication found.
         setupOutcome = "failed";
         setupPhaseFailed = "init_scan";
         const { classifyError: classifyError2, reportError: reportError2 } = await Promise.resolve().then(() => (init_telemetry(), telemetry_exports));
+        setupErrorClass = classifyError2(err);
         try {
-          reportError2("setup", classifyError2(err), true);
+          reportError2("setup", setupErrorClass, true);
         } catch {
         }
         await sendSetupTelemetry();
@@ -43890,54 +45175,94 @@ Error: No Claude authentication found.
         const mcpPaths = [projectPath];
         if (isWorkspace2) {
           for (const p of ws.projects) {
-            mcpPaths.push(join32(projectPath, p.path));
+            mcpPaths.push(join37(projectPath, p.path));
           }
         }
         for (const dir of mcpPaths) {
-          const mcpPath = join32(dir, ".mcp.json");
+          const mcpPath = join37(dir, ".mcp.json");
           let mcpConfig = {};
-          if (existsSync16(mcpPath)) {
+          if (existsSync19(mcpPath)) {
             try {
-              mcpConfig = JSON.parse(readFileSync17(mcpPath, "utf-8"));
+              mcpConfig = JSON.parse(readFileSync20(mcpPath, "utf-8"));
             } catch {
               mcpConfig = {};
             }
           }
           if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {};
           mcpConfig.mcpServers.axme = mcpEntry;
-          writeFileSync7(mcpPath, JSON.stringify(mcpConfig, null, 2) + "\n", "utf-8");
+          writeFileSync10(mcpPath, JSON.stringify(mcpConfig, null, 2) + "\n", "utf-8");
         }
         console.log(`  .mcp.json: updated (${mcpPaths.length} locations)`);
       } else {
         console.log(`  .mcp.json: skipped (plugin provides MCP server)`);
       }
-      generateClaudeMd(projectPath, isWorkspace2);
-      if (!isPlugin) {
-        configureHooks(projectPath);
+      if (ide === "cursor") {
+        const { writeCursorMcpJson: writeCursorMcpJson2, writeCursorHooksJson: writeCursorHooksJson2, writeCursorRulesMdc: writeCursorRulesMdc2 } = await Promise.resolve().then(() => (init_cursor_writers(), cursor_writers_exports));
+        const cursorPaths = [projectPath];
+        if (isWorkspace2) {
+          for (const p of ws.projects) cursorPaths.push(join37(projectPath, p.path));
+        }
+        for (const dir of cursorPaths) writeCursorMcpJson2(dir);
+        console.log(`  .cursor/mcp.json: updated (${cursorPaths.length} locations)`);
+        writeCursorHooksJson2(projectPath, buildHookCommand);
+        console.log("  .cursor/hooks.json: hooks configured (preToolUse + postToolUse + sessionEnd)");
+        writeCursorRulesMdc2(projectPath, isWorkspace2);
+        console.log("  .cursor/rules/axme-code.mdc: created");
       } else {
-        console.log(`  Hooks: skipped (plugin provides hooks)`);
+        generateClaudeMd(projectPath, isWorkspace2);
+        if (!isPlugin) {
+          configureHooks(projectPath);
+        } else {
+          console.log(`  Hooks: skipped (plugin provides hooks)`);
+        }
       }
-      const gitignorePath = join32(projectPath, ".gitignore");
-      if (existsSync16(gitignorePath)) {
-        const content = readFileSync17(gitignorePath, "utf-8");
+      const gitignorePath = join37(projectPath, ".gitignore");
+      if (existsSync19(gitignorePath)) {
+        const content = readFileSync20(gitignorePath, "utf-8");
         if (!content.includes(".axme-code")) {
-          writeFileSync7(gitignorePath, content.trimEnd() + "\n.axme-code/\n", "utf-8");
+          writeFileSync10(gitignorePath, content.trimEnd() + "\n.axme-code/\n", "utf-8");
           console.log("  .gitignore: added .axme-code/");
         }
       } else {
-        writeFileSync7(gitignorePath, ".axme-code/\n", "utf-8");
+        writeFileSync10(gitignorePath, ".axme-code/\n", "utf-8");
         console.log("  .gitignore: created with .axme-code/");
       }
-      const repoCount = isWorkspace2 ? ws.projects.filter((p) => existsSync16(join32(projectPath, p.path, ".git"))).length : 0;
+      const repoCount = isWorkspace2 ? ws.projects.filter((p) => existsSync19(join37(projectPath, p.path, ".git"))).length : 0;
       writeBootstrapToAxmeMemory(projectPath, isWorkspace2, repoCount);
       setupOutcome = setupMethod === "llm" ? "success" : "fallback";
       await sendSetupTelemetry();
-      console.log("\nDone! Run 'claude' to start using AXME tools.");
+      try {
+        const { readConfig: readConfig2 } = await Promise.resolve().then(() => (init_config(), config_exports));
+        const cfg = readConfig2(projectPath);
+        if (cfg.contextMode === "search") {
+          const { isRuntimeInstalled: isRuntimeInstalled2 } = await Promise.resolve().then(() => (init_embeddings(), embeddings_exports));
+          if (isRuntimeInstalled2()) {
+            const { reindexAll: reindexAll2 } = await Promise.resolve().then(() => (init_search_install(), search_install_exports));
+            const r = await reindexAll2(projectPath);
+            if (r.ok) console.log(`Indexed ${r.indexed} entries for semantic search.`);
+            else console.error(`Search reindex skipped: ${r.error}`);
+          } else {
+            console.error("Search mode is on but the embeddings runtime is missing \u2014 run `axme-code reindex` manually after installing.");
+          }
+        }
+      } catch (err) {
+        console.error(`Search reindex post-setup failed (non-fatal): ${err.message}`);
+      }
+      if (ide === "cursor") {
+        console.log("\nDone! Open a new chat in Cursor \u2014 AXME tools are now available.");
+      } else {
+        console.log("\nDone! Run 'claude' to start using AXME tools.");
+      }
       break;
     }
     case "serve": {
       await Promise.resolve().then(() => (init_server3(), server_exports));
       break;
+    }
+    case "self-test": {
+      const { runSelfTest: runSelfTest2 } = await Promise.resolve().then(() => (init_self_test(), self_test_exports));
+      const code = await runSelfTest2();
+      process.exit(code);
     }
     case "status": {
       const projectPath = resolve8(args[1] || ".");
@@ -43948,23 +45273,25 @@ Error: No Claude authentication found.
       const hookName = args[1];
       const wsIdx = args.indexOf("--workspace");
       const workspacePath = wsIdx >= 0 && args[wsIdx + 1] ? args[wsIdx + 1] : void 0;
+      const { parseIdeFlag: parseIdeFlag2 } = await Promise.resolve().then(() => (init_ide_detect(), ide_detect_exports));
+      const ide = parseIdeFlag2(args) ?? "claude-code";
       if (hookName === "pre-tool-use") {
         const { runPreToolUseHook: runPreToolUseHook2 } = await Promise.resolve().then(() => (init_pre_tool_use(), pre_tool_use_exports));
-        await runPreToolUseHook2(workspacePath);
+        await runPreToolUseHook2(workspacePath, ide);
       } else if (hookName === "post-tool-use") {
         const { runPostToolUseHook: runPostToolUseHook2 } = await Promise.resolve().then(() => (init_post_tool_use(), post_tool_use_exports));
-        await runPostToolUseHook2(workspacePath);
+        await runPostToolUseHook2(workspacePath, ide);
       } else if (hookName === "session-end") {
         const { runSessionEndHook: runSessionEndHook2 } = await Promise.resolve().then(() => (init_session_end(), session_end_exports));
-        await runSessionEndHook2(workspacePath);
+        await runSessionEndHook2(workspacePath, ide);
       }
       break;
     }
     case "check-init": {
       if (process.env.CLAUDE_PLUGIN_ROOT) {
         const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
-        const sdkDir = join32(pluginRoot, "node_modules", "@anthropic-ai", "claude-agent-sdk");
-        if (!existsSync16(sdkDir)) {
+        const sdkDir = join37(pluginRoot, "node_modules", "@anthropic-ai", "claude-agent-sdk");
+        if (!existsSync19(sdkDir)) {
           try {
             const { execSync: execSync3 } = await import("node:child_process");
             execSync3("npm install --omit=dev --ignore-scripts", {
@@ -43977,7 +45304,7 @@ Error: No Claude authentication found.
         }
       }
       const checkPath = resolve8(args[1] || ".");
-      const claudeMdPath = join32(checkPath, "CLAUDE.md");
+      const claudeMdPath = join37(checkPath, "CLAUDE.md");
       const axmeSection = `## AXME Code
 
 ### Session Start (MANDATORY)
@@ -43985,13 +45312,13 @@ Call axme_context at the start of every session.
 If it returns "not initialized", run \`axme-code setup --plugin\` via Bash tool immediately.
 Do NOT skip \u2014 without context you will miss critical project rules.
 `;
-      if (existsSync16(claudeMdPath)) {
-        const content = readFileSync17(claudeMdPath, "utf-8");
+      if (existsSync19(claudeMdPath)) {
+        const content = readFileSync20(claudeMdPath, "utf-8");
         if (!content.includes("## AXME Code")) {
-          writeFileSync7(claudeMdPath, content.trimEnd() + "\n\n" + axmeSection, "utf-8");
+          writeFileSync10(claudeMdPath, content.trimEnd() + "\n\n" + axmeSection, "utf-8");
         }
       } else {
-        writeFileSync7(claudeMdPath, axmeSection, "utf-8");
+        writeFileSync10(claudeMdPath, axmeSection, "utf-8");
       }
       const { configExists: configExists2 } = await Promise.resolve().then(() => (init_config(), config_exports));
       if (configExists2(checkPath)) {
@@ -44134,9 +45461,22 @@ Recent errors:`);
       }
       if (sub === "use" || sub === "set") {
         const mode = args[2];
-        if (mode !== "subscription" && mode !== "api_key") {
-          console.error("Usage: axme-code auth use <subscription|api_key>");
+        if (mode !== "subscription" && mode !== "api_key" && mode !== "cursor_sdk") {
+          console.error("Usage: axme-code auth use <subscription|api_key|cursor_sdk>");
           process.exit(1);
+        }
+        if (mode === "cursor_sdk") {
+          const { loadCursorApiKey: loadCursorApiKey2, saveCursorApiKey: saveCursorApiKey2 } = await Promise.resolve().then(() => (init_auth_config(), auth_config_exports));
+          if (!loadCursorApiKey2() && !process.env.CURSOR_API_KEY) {
+            console.error(
+              "cursor_sdk mode requires a key. Set CURSOR_API_KEY in env, or run\n  axme-code auth          (interactive \u2014 paste key when prompted)"
+            );
+            process.exit(1);
+          }
+          if (process.env.CURSOR_API_KEY && !loadCursorApiKey2()) {
+            saveCursorApiKey2(process.env.CURSOR_API_KEY);
+            console.log("  Saved Cursor API key from env to ~/.config/axme-code/cursor.yaml (chmod 600)");
+          }
         }
         saveAuthConfig(mode);
         console.log(`Saved auth mode: ${mode} (${authConfigPath()})`);
@@ -44155,7 +45495,7 @@ Current mode: ${saved.mode} (saved ${saved.chosenAt})`);
           process.exit(1);
         }
         if (!process.stdin.isTTY) {
-          console.error("`axme-code auth` requires an interactive terminal. Use `axme-code auth use <subscription|api_key>` non-interactively.");
+          console.error("`axme-code auth` requires an interactive terminal. Use `axme-code auth use <subscription|api_key|cursor_sdk>` non-interactively.");
           process.exit(1);
         }
         const choice = await promptAuthChoice(options);
@@ -44163,12 +45503,23 @@ Current mode: ${saved.mode} (saved ${saved.chosenAt})`);
           console.log("Cancelled. No change.");
           break;
         }
+        if (choice === "cursor_sdk" && !options.cursorSdk?.present) {
+          const { promptCursorApiKey: promptCursorApiKey2 } = await Promise.resolve().then(() => (init_auth_prompt(), auth_prompt_exports));
+          const { saveCursorApiKey: saveCursorApiKey2 } = await Promise.resolve().then(() => (init_auth_config(), auth_config_exports));
+          const key = await promptCursorApiKey2();
+          if (!key) {
+            console.log("Cursor API key paste cancelled. No change.");
+            break;
+          }
+          saveCursorApiKey2(key);
+          console.log("  Saved Cursor API key: ~/.config/axme-code/cursor.yaml (chmod 600)");
+        }
         saveAuthConfig(choice);
         console.log(`Saved auth mode: ${choice} (${authConfigPath()})`);
         break;
       }
       console.error(`Unknown 'auth' subcommand: ${sub}`);
-      console.error("Available: (none)|choose, status|show, use|set <subscription|api_key>");
+      console.error("Available: (none)|choose, status|show, use|set <subscription|api_key|cursor_sdk>");
       process.exit(1);
     }
     case "config": {
@@ -44239,6 +45590,63 @@ Failed to enable search mode: ${result.error}`);
         console.error(`Reindex failed: ${result.error}`);
         process.exit(1);
       }
+      break;
+    }
+    case "backlog": {
+      const sub = args[1];
+      const projectPath = resolve8(process.cwd());
+      const { addBacklogItem: addBacklogItem2, listBacklogItems: listBacklogItems2 } = await Promise.resolve().then(() => (init_backlog(), backlog_exports));
+      if (sub === "list") {
+        const items = listBacklogItems2(projectPath);
+        if (args.includes("--json")) {
+          console.log(JSON.stringify(items));
+        } else if (items.length === 0) {
+          console.log("No backlog items.");
+        } else {
+          for (const i of items) console.log(`${i.id} [${i.status}/${i.priority}] ${i.title}`);
+        }
+        break;
+      }
+      if (sub === "add") {
+        const flag = (name) => {
+          const idx = args.indexOf(`--${name}`);
+          return idx >= 0 && args[idx + 1] ? args[idx + 1] : void 0;
+        };
+        const title = flag("title");
+        if (!title) {
+          console.error("backlog add: --title is required");
+          process.exit(1);
+        }
+        const priority = flag("priority") || "medium";
+        const description = flag("description") || "";
+        const item = addBacklogItem2(projectPath, { title, description, priority });
+        console.log(item.id);
+        break;
+      }
+      if (sub === "update") {
+        const flag = (name) => {
+          const idx = args.indexOf(`--${name}`);
+          return idx >= 0 && args[idx + 1] ? args[idx + 1] : void 0;
+        };
+        const id = flag("id");
+        if (!id) {
+          console.error("backlog update: --id is required");
+          process.exit(1);
+        }
+        const status = flag("status");
+        const priority = flag("priority");
+        const notes = flag("notes");
+        const { updateBacklogItem: updateBacklogItem2 } = await Promise.resolve().then(() => (init_backlog(), backlog_exports));
+        const updated = updateBacklogItem2(projectPath, id, { status, priority, notes });
+        if (!updated) {
+          console.error(`backlog update: ${id} not found`);
+          process.exit(1);
+        }
+        console.log(`${updated.id} \u2192 status=${updated.status}, priority=${updated.priority}`);
+        break;
+      }
+      console.error("Usage: axme-code backlog <list|add|update> [--title ... --priority ... --description ... --id ... --status ...]");
+      process.exit(1);
       break;
     }
     case "help":

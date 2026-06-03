@@ -6900,7 +6900,7 @@ var AXME_CODE_VERSION, AXME_CODE_DIR, DEFAULT_MODEL, DEFAULT_AUDITOR_MODEL, DEFA
 var init_types = __esm({
   "src/types.ts"() {
     "use strict";
-    AXME_CODE_VERSION = true ? "0.5.0" : "0.0.0-dev";
+    AXME_CODE_VERSION = true ? "0.6.0" : "0.0.0-dev";
     AXME_CODE_DIR = ".axme-code";
     DEFAULT_MODEL = "claude-sonnet-4-6";
     DEFAULT_AUDITOR_MODEL = "claude-sonnet-4-6";
@@ -6920,8 +6920,337 @@ var init_types = __esm({
   }
 });
 
+// src/storage/oracle.ts
+var oracle_exports = {};
+__export(oracle_exports, {
+  ensureOracleBootstrapped: () => ensureOracleBootstrapped,
+  getOracleSections: () => getOracleSections,
+  initOracleDeterministic: () => initOracleDeterministic,
+  loadOracleFiles: () => loadOracleFiles,
+  oracleContext: () => oracleContext,
+  oracleDir: () => oracleDir,
+  oracleExists: () => oracleExists,
+  saveOracleSection: () => saveOracleSection,
+  showOracle: () => showOracle,
+  writeOracleFiles: () => writeOracleFiles
+});
+import { readFileSync as readFileSync2, readdirSync as readdirSync2, existsSync as existsSync2, statSync as statSync2 } from "node:fs";
+import { join as join2 } from "node:path";
+function writeOracleFiles(projectPath, files) {
+  const dir = oracleDir(projectPath);
+  ensureDir(dir);
+  atomicWrite(join2(dir, "stack.md"), files.stack);
+  atomicWrite(join2(dir, "structure.md"), files.structure);
+  atomicWrite(join2(dir, "patterns.md"), files.patterns);
+  atomicWrite(join2(dir, "glossary.md"), files.glossary);
+}
+function loadOracleFiles(projectPath) {
+  const dir = oracleDir(projectPath);
+  if (!pathExists(dir)) return null;
+  const stack = readSafe(join2(dir, "stack.md"));
+  const structure = readSafe(join2(dir, "structure.md"));
+  const patterns = readSafe(join2(dir, "patterns.md"));
+  const glossary = readSafe(join2(dir, "glossary.md"));
+  if (!stack && !structure && !patterns && !glossary) return null;
+  return { stack, structure, patterns, glossary };
+}
+function oracleContext(projectPath) {
+  const files = loadOracleFiles(projectPath);
+  if (!files) return "";
+  const parts = [];
+  if (files.stack) parts.push(`## Stack
+${files.stack}`);
+  if (files.structure) parts.push(`## Structure
+${files.structure}`);
+  if (files.patterns) parts.push(`## Patterns
+${files.patterns}`);
+  if (files.glossary) parts.push(`## Glossary
+${files.glossary}`);
+  return parts.join("\n\n");
+}
+function showOracle(projectPath) {
+  return getOracleSections(projectPath).join("\n\n---\n\n");
+}
+function getOracleSections(projectPath) {
+  const files = loadOracleFiles(projectPath);
+  if (!files) {
+    return [
+      "Oracle is empty for this project. Two ways to populate:\n\n\u2022 Cooperative \u2014 ask the agent to enrich oracle inline (calls axme_save_oracle for each section: stack, structure, patterns, glossary).\n\u2022 API-key path \u2014 run `axme-code setup` in a terminal (or `AXME: Set up workspace` from Cursor's Command Palette) to run the LLM oracle scanner.\n\nIf `.axme-code/oracle/` already exists but is empty, the MCP server bootstraps a deterministic skeleton (detected stack + structure) on the next save call \u2014 the agent can then enrich it."
+    ];
+  }
+  const sections = [];
+  if (files.stack) sections.push("# Stack\n\n" + files.stack);
+  if (files.structure) sections.push("# Structure\n\n" + files.structure);
+  if (files.patterns) sections.push("# Patterns\n\n" + files.patterns);
+  if (files.glossary) sections.push("# Glossary\n\n" + files.glossary);
+  return sections;
+}
+function ensureOracleBootstrapped(projectPath) {
+  if (!pathExists(join2(projectPath, AXME_CODE_DIR))) return;
+  if (loadOracleFiles(projectPath)) return;
+  try {
+    initOracleDeterministic(projectPath);
+  } catch {
+  }
+}
+function saveOracleSection(projectPath, section, content, mode = "replace") {
+  const existing = loadOracleFiles(projectPath) ?? { stack: "", structure: "", patterns: "", glossary: "" };
+  const next = { ...existing };
+  if (mode === "append" && existing[section]) {
+    next[section] = existing[section] + "\n\n" + content;
+  } else {
+    next[section] = content;
+  }
+  writeOracleFiles(projectPath, next);
+}
+function oracleExists(projectPath) {
+  return pathExists(join2(oracleDir(projectPath), "stack.md"));
+}
+function oracleDir(projectPath) {
+  return join2(projectPath, AXME_CODE_DIR, ORACLE_DIR);
+}
+function initOracleDeterministic(projectPath) {
+  const data = scanProject(projectPath);
+  writeOracleFromData(projectPath, data);
+  return data;
+}
+function writeOracleFromData(projectPath, data) {
+  writeOracleFiles(projectPath, {
+    stack: formatStack(data.stack),
+    structure: formatStructure(data.structure),
+    patterns: data.patterns || "No patterns detected yet.",
+    glossary: data.glossary || "No glossary entries yet."
+  });
+}
+function scanProject(projectPath) {
+  const stack = detectStack(projectPath);
+  const structure = detectStructure(projectPath);
+  const patterns = detectPatterns(projectPath);
+  const glossary = detectGlossary(projectPath);
+  if (stack.languages.length === 0) {
+    const sub = scanSubprojects(projectPath);
+    if (sub.languages.size > 0) {
+      stack.languages = Array.from(sub.languages);
+      stack.frameworks = Array.from(sub.frameworks);
+      stack.buildTools = Array.from(sub.buildTools);
+      stack.testFrameworks = Array.from(sub.testFrameworks);
+      stack.packageManager = sub.packageManager;
+    }
+    for (const dir of structure.directories) {
+      const subType = sub.projectTypes.get(dir.path);
+      if (subType) dir.description = subType;
+    }
+  }
+  return { stack, structure, patterns, glossary };
+}
+function scanSubprojects(root) {
+  const result = {
+    languages: /* @__PURE__ */ new Set(),
+    frameworks: /* @__PURE__ */ new Set(),
+    buildTools: /* @__PURE__ */ new Set(),
+    testFrameworks: /* @__PURE__ */ new Set(),
+    packageManager: null,
+    projectTypes: /* @__PURE__ */ new Map()
+  };
+  try {
+    for (const entry of readdirSync2(root)) {
+      if (entry.startsWith(".") || ["node_modules", "dist", "build"].includes(entry)) continue;
+      const full = join2(root, entry);
+      try {
+        if (!statSync2(full).isDirectory()) continue;
+      } catch {
+        continue;
+      }
+      const sub = detectStack(full);
+      if (sub.languages.length === 0) continue;
+      for (const l of sub.languages) result.languages.add(l);
+      for (const f of sub.frameworks) result.frameworks.add(f);
+      for (const b of sub.buildTools) result.buildTools.add(b);
+      for (const t of sub.testFrameworks) result.testFrameworks.add(t);
+      if (!result.packageManager && sub.packageManager) result.packageManager = sub.packageManager;
+      const desc = [sub.languages.join("/"), ...sub.frameworks.slice(0, 2)].join(", ");
+      result.projectTypes.set(entry, desc || "project");
+    }
+  } catch {
+  }
+  return result;
+}
+function detectStack(root) {
+  const info = {
+    languages: [],
+    frameworks: [],
+    buildTools: [],
+    testFrameworks: [],
+    packageManager: null,
+    nodeVersion: null,
+    pythonVersion: null,
+    goVersion: null
+  };
+  const pkg = readJsonSafe(join2(root, "package.json"));
+  if (pkg) {
+    info.packageManager = existsSync2(join2(root, "pnpm-lock.yaml")) ? "pnpm" : existsSync2(join2(root, "yarn.lock")) ? "yarn" : existsSync2(join2(root, "bun.lock")) || existsSync2(join2(root, "bun.lockb")) ? "bun" : "npm";
+    const deps = { ...pkg.dependencies ?? {}, ...pkg.devDependencies ?? {} };
+    info.languages.push(deps.typescript || existsSync2(join2(root, "tsconfig.json")) ? "TypeScript" : "JavaScript");
+    info.nodeVersion = pkg.engines?.node ?? null;
+    if (deps.next) info.frameworks.push("Next.js");
+    if (deps.react) info.frameworks.push("React");
+    if (deps.vue) info.frameworks.push("Vue");
+    if (deps.express) info.frameworks.push("Express");
+    if (deps.fastify) info.frameworks.push("Fastify");
+    if (deps.hono) info.frameworks.push("Hono");
+    if (deps.vite) info.buildTools.push("Vite");
+    if (deps.esbuild) info.buildTools.push("esbuild");
+    if (deps.jest) info.testFrameworks.push("Jest");
+    if (deps.vitest) info.testFrameworks.push("Vitest");
+    if (pkg.scripts?.test?.includes("node --test")) info.testFrameworks.push("node:test");
+  }
+  const pyproject = readSafe(join2(root, "pyproject.toml"));
+  const requirements = readSafe(join2(root, "requirements.txt"));
+  if (pyproject || requirements || existsSync2(join2(root, "setup.py"))) {
+    info.languages.push("Python");
+    const allPy = (pyproject + "\n" + requirements).toLowerCase();
+    if (allPy.includes("pytest")) info.testFrameworks.push("pytest");
+    if (allPy.includes("fastapi")) info.frameworks.push("FastAPI");
+    if (allPy.includes("django")) info.frameworks.push("Django");
+    if (allPy.includes("flask")) info.frameworks.push("Flask");
+  }
+  if (existsSync2(join2(root, "go.mod"))) {
+    info.languages.push("Go");
+    const goMod = readSafe(join2(root, "go.mod"));
+    const ver = goMod.match(/^go\s+(\S+)/m);
+    if (ver) info.goVersion = ver[1];
+  }
+  if (existsSync2(join2(root, "Cargo.toml"))) {
+    info.languages.push("Rust");
+    info.buildTools.push("Cargo");
+  }
+  if (existsSync2(join2(root, "pom.xml"))) {
+    info.languages.push("Java");
+    info.buildTools.push("Maven");
+  } else if (existsSync2(join2(root, "build.gradle")) || existsSync2(join2(root, "build.gradle.kts"))) {
+    info.languages.push("Java/Kotlin");
+    info.buildTools.push("Gradle");
+  }
+  try {
+    if (readdirSync2(root).some((f) => f.endsWith(".csproj"))) {
+      info.languages.push("C#");
+      info.buildTools.push("dotnet");
+    }
+  } catch {
+  }
+  return info;
+}
+function detectStructure(root) {
+  const rootFiles = [];
+  const directories = [];
+  const entryPoints = [];
+  try {
+    for (const entry of readdirSync2(root)) {
+      if (entry.startsWith(".") && entry !== ".github") continue;
+      if (["node_modules", "dist", "build", "__pycache__"].includes(entry)) continue;
+      const full = join2(root, entry);
+      try {
+        const stat = statSync2(full);
+        if (stat.isDirectory()) directories.push({ path: entry, description: guessDirPurpose(entry) });
+        else if (stat.isFile()) rootFiles.push(entry);
+      } catch {
+      }
+    }
+  } catch {
+  }
+  const pkg = readJsonSafe(join2(root, "package.json"));
+  if (pkg?.main) entryPoints.push(pkg.main);
+  if (pkg?.bin) {
+    if (typeof pkg.bin === "string") entryPoints.push(pkg.bin);
+    else Object.values(pkg.bin).forEach((v) => entryPoints.push(v));
+  }
+  for (const ep of ["src/index.ts", "src/main.ts", "src/index.js"]) {
+    if (existsSync2(join2(root, ep))) entryPoints.push(ep);
+  }
+  return { rootFiles, directories, entryPoints };
+}
+function detectPatterns(root) {
+  const parts = [];
+  const claude = readSafe(join2(root, "CLAUDE.md"));
+  if (claude) parts.push("From CLAUDE.md:\n" + claude.slice(0, 3e3));
+  if (existsSync2(join2(root, ".editorconfig"))) parts.push("EditorConfig present.");
+  for (const f of [".eslintrc.json", "eslint.config.js", "eslint.config.mjs"]) {
+    if (existsSync2(join2(root, f))) {
+      parts.push(`ESLint: ${f}`);
+      break;
+    }
+  }
+  for (const f of [".prettierrc", ".prettierrc.json", "prettier.config.js"]) {
+    if (existsSync2(join2(root, f))) {
+      parts.push(`Prettier: ${f}`);
+      break;
+    }
+  }
+  return parts.join("\n\n");
+}
+function detectGlossary(root) {
+  const readme = readSafe(join2(root, "README.md"));
+  if (!readme) return "";
+  const heading = readme.match(/^#\s+(.+)/m);
+  return heading ? `- ${heading[1].trim()}: this project` : "";
+}
+function formatStack(s) {
+  const lines = [];
+  if (s.languages.length) lines.push(`Languages: ${s.languages.join(", ")}`);
+  if (s.frameworks.length) lines.push(`Frameworks: ${s.frameworks.join(", ")}`);
+  if (s.buildTools.length) lines.push(`Build: ${s.buildTools.join(", ")}`);
+  if (s.testFrameworks.length) lines.push(`Test: ${s.testFrameworks.join(", ")}`);
+  if (s.packageManager) lines.push(`Package manager: ${s.packageManager}`);
+  if (s.nodeVersion) lines.push(`Node: ${s.nodeVersion}`);
+  if (s.pythonVersion) lines.push(`Python: ${s.pythonVersion}`);
+  if (s.goVersion) lines.push(`Go: ${s.goVersion}`);
+  return lines.join("\n");
+}
+function formatStructure(s) {
+  const lines = [];
+  for (const dir of s.directories) lines.push(`${dir.path}/ - ${dir.description}`);
+  if (s.entryPoints.length) lines.push(`
+Entry points: ${s.entryPoints.join(", ")}`);
+  return lines.join("\n");
+}
+function guessDirPurpose(name) {
+  return DIR_PURPOSE[name] ?? "project directory";
+}
+function readJsonSafe(path) {
+  try {
+    return JSON.parse(readFileSync2(path, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+var ORACLE_DIR, DIR_PURPOSE;
+var init_oracle = __esm({
+  "src/storage/oracle.ts"() {
+    "use strict";
+    init_engine();
+    init_types();
+    ORACLE_DIR = "oracle";
+    DIR_PURPOSE = {
+      src: "source code",
+      lib: "library code",
+      test: "tests",
+      tests: "tests",
+      docs: "documentation",
+      scripts: "build/dev scripts",
+      bin: "executables",
+      config: "configuration",
+      public: "static assets",
+      migrations: "database migrations",
+      cmd: "Go commands",
+      pkg: "Go packages",
+      internal: "Go internal",
+      ".github": "GitHub workflows"
+    };
+  }
+});
+
 // src/storage/worklog.ts
-import { readFileSync as readFileSync2 } from "node:fs";
+import { readFileSync as readFileSync3 } from "node:fs";
 import { join as join3 } from "node:path";
 function worklogPath(projectPath) {
   return join3(projectPath, AXME_CODE_DIR, WORKLOG_FILE);
@@ -6938,7 +7267,7 @@ function logEvent(projectPath, type2, sessionId, data = {}) {
 function readWorklog(projectPath, opts) {
   const path = worklogPath(projectPath);
   if (!pathExists(path)) return [];
-  const lines = readFileSync2(path, "utf-8").trim().split("\n").filter(Boolean);
+  const lines = readFileSync3(path, "utf-8").trim().split("\n").filter(Boolean);
   let events = lines.map((line) => {
     try {
       return JSON.parse(line);
@@ -7005,7 +7334,7 @@ __export(decisions_exports, {
   supersedeDecision: () => supersedeDecision,
   toSlug: () => toSlug
 });
-import { readFileSync as readFileSync3, readdirSync as readdirSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { readFileSync as readFileSync4, readdirSync as readdirSync3, writeFileSync as writeFileSync2 } from "node:fs";
 import { join as join4, resolve, basename } from "node:path";
 function initDecisionStore(projectPath) {
   ensureDir(decisionsDir(projectPath));
@@ -7183,7 +7512,7 @@ function toSlug(text) {
 }
 function listDecisionFiles(dir) {
   try {
-    return readdirSync2(dir).filter((f) => f.startsWith("D-") && f.endsWith(".md")).sort();
+    return readdirSync3(dir).filter((f) => f.startsWith("D-") && f.endsWith(".md")).sort();
   } catch {
     return [];
   }
@@ -7222,7 +7551,7 @@ ${d.reasoning}
 }
 function parseDecisionFile(filePath) {
   try {
-    const content = readFileSync3(filePath, "utf-8");
+    const content = readFileSync4(filePath, "utf-8");
     const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
     if (!fmMatch) return null;
     const fm = fmMatch[1];
@@ -9958,7 +10287,7 @@ __export(safety_exports, {
   updateSafetyRule: () => updateSafetyRule,
   writeSafetyRules: () => writeSafetyRules
 });
-import { readFileSync as readFileSync5 } from "node:fs";
+import { readFileSync as readFileSync6 } from "node:fs";
 import { join as join7, resolve as resolve2, basename as basename2 } from "node:path";
 import { execSync } from "node:child_process";
 import { homedir as homedir2 } from "node:os";
@@ -9979,7 +10308,7 @@ function defaultRules() {
 function initSafetyRules(projectPath) {
   const rules = defaultRules();
   try {
-    const gitConfig = readFileSync5(join7(projectPath, ".git/config"), "utf-8");
+    const gitConfig = readFileSync6(join7(projectPath, ".git/config"), "utf-8");
     if (gitConfig.includes('[branch "main"]')) {
       rules.git.protectedBranches = ["main"];
     }
@@ -9992,7 +10321,7 @@ function loadSafetyRules(projectPath) {
   const rulesPath = join7(projectPath, AXME_CODE_DIR, SAFETY_DIR, RULES_FILE);
   if (!pathExists(rulesPath)) return defaultRules();
   try {
-    const parsed = jsYaml.load(readFileSync5(rulesPath, "utf-8"));
+    const parsed = jsYaml.load(readFileSync6(rulesPath, "utf-8"));
     return mergeSafetyRules(defaultRules(), parsed);
   } catch {
     return defaultRules();
@@ -10268,14 +10597,22 @@ function checkGit(rules, command, _cwd, skipMergedCheck) {
   }
   return { allowed: true };
 }
+function normalizePathForSafety(p) {
+  const slashed = p.replace(/\\/g, "/");
+  return process.platform === "win32" ? slashed.toLowerCase() : slashed;
+}
 function checkFilePath(rules, filePath, operation) {
   for (const denied of rules.filesystem.deniedPaths) {
     const pattern = denied.replace("~", homedir2());
     if (matchesPattern(filePath, pattern)) return { allowed: false, reason: `Path denied: ${denied}` };
   }
   if (operation === "write") {
+    const normFile = normalizePathForSafety(filePath);
     for (const readOnly of rules.filesystem.readOnlyPaths) {
-      if (filePath.startsWith(readOnly)) return { allowed: false, reason: `Path is read-only: ${readOnly}` };
+      const normRule = normalizePathForSafety(readOnly.replace("~", homedir2()));
+      if (normFile === normRule || normFile.startsWith(normRule + "/")) {
+        return { allowed: false, reason: `Path is read-only: ${readOnly}` };
+      }
     }
   }
   return { allowed: true };
@@ -10477,7 +10814,7 @@ __export(memory_exports, {
   showMemories: () => showMemories,
   toMemorySlug: () => toMemorySlug
 });
-import { readFileSync as readFileSync6, readdirSync as readdirSync4 } from "node:fs";
+import { readFileSync as readFileSync7, readdirSync as readdirSync5 } from "node:fs";
 import { join as join8, resolve as resolve3, basename as basename3 } from "node:path";
 function initMemoryStore(projectPath) {
   ensureDir(join8(memoryDir(projectPath), FEEDBACK_DIR));
@@ -10543,7 +10880,7 @@ function listMemories(projectPath, type2) {
     const dir = join8(memoryDir(projectPath), subdir);
     if (!pathExists(dir)) continue;
     try {
-      for (const f of readdirSync4(dir).filter((f2) => f2.endsWith(".md")).sort()) {
+      for (const f of readdirSync5(dir).filter((f2) => f2.endsWith(".md")).sort()) {
         const m = parseMemoryFile(join8(dir, f));
         if (m) result.push(m);
       }
@@ -10665,7 +11002,7 @@ ${m.body}
 }
 function parseMemoryFile(filePath) {
   try {
-    const content = readFileSync6(filePath, "utf-8");
+    const content = readFileSync7(filePath, "utf-8");
     const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
     if (!fmMatch) return null;
     const fm = fmMatch[1];
@@ -10815,7 +11152,7 @@ __export(plans_exports, {
   showPlans: () => showPlans,
   writeHandoff: () => writeHandoff
 });
-import { readdirSync as readdirSync5, unlinkSync as unlinkSync2 } from "node:fs";
+import { readdirSync as readdirSync6, unlinkSync as unlinkSync2 } from "node:fs";
 import { join as join10 } from "node:path";
 import { randomUUID as randomUUID2 } from "node:crypto";
 function plansRoot(projectPath) {
@@ -10857,7 +11194,7 @@ function listPlans(projectPath, opts) {
   if (!pathExists(dir)) return [];
   const plans = [];
   try {
-    for (const f of readdirSync5(dir).filter((f2) => f2.endsWith(".md") && f2 !== "handoff.md").sort()) {
+    for (const f of readdirSync6(dir).filter((f2) => f2.endsWith(".md") && f2 !== "handoff.md").sort()) {
       const plan = parsePlanFile(readSafe(join10(dir, f)));
       if (plan) {
         if (opts?.status && plan.status !== opts.status) continue;
@@ -10970,7 +11307,7 @@ function formatHandoff(h) {
 function cleanupOldHandoffs(projectPath) {
   try {
     const dir = plansRoot(projectPath);
-    const files = readdirSync5(dir).filter((f) => f.startsWith("handoff-") && f.endsWith(".md")).sort().reverse();
+    const files = readdirSync6(dir).filter((f) => f.startsWith("handoff-") && f.endsWith(".md")).sort().reverse();
     for (const f of files.slice(HANDOFF_RETENTION)) {
       try {
         unlinkSync2(join10(dir, f));
@@ -11150,14 +11487,14 @@ __export(sessions_exports, {
   writeSession: () => writeSession
 });
 import { join as join11, resolve as resolve4 } from "node:path";
-import { readdirSync as readdirSync6, readFileSync as readFileSync8, rmSync, openSync as openSync2, closeSync as closeSync2, unlinkSync as unlinkSync3, statSync as statSync3 } from "node:fs";
+import { readdirSync as readdirSync7, readFileSync as readFileSync9, rmSync, openSync as openSync2, closeSync as closeSync2, unlinkSync as unlinkSync3, statSync as statSync4 } from "node:fs";
 import { randomUUID as randomUUID3 } from "node:crypto";
 function isRetryableError(errMsg) {
   return RETRYABLE_ERROR_PATTERNS.some((p) => p.test(errMsg));
 }
 function getClaudeCodePid() {
   try {
-    const stat = readFileSync8(`/proc/${process.ppid}/stat`, "utf-8");
+    const stat = readFileSync9(`/proc/${process.ppid}/stat`, "utf-8");
     const closeParen = stat.lastIndexOf(")");
     if (closeParen > 0) {
       const parts = stat.slice(closeParen + 2).split(" ");
@@ -11229,7 +11566,7 @@ function clearLegacyPendingAuditsDir(projectPath) {
   const dir = legacyPendingAuditsDir(projectPath);
   if (!pathExists(dir)) return;
   try {
-    for (const entry of readdirSync6(dir)) {
+    for (const entry of readdirSync7(dir)) {
       removeFile(join11(dir, entry));
     }
   } catch {
@@ -11298,7 +11635,7 @@ function listClaudeSessionMappings(projectPath) {
   if (!pathExists(dir)) return [];
   const result = [];
   try {
-    for (const entry of readdirSync6(dir)) {
+    for (const entry of readdirSync7(dir)) {
       if (!entry.endsWith(".txt")) continue;
       const claudeSessionId = entry.slice(0, -4);
       const mapping = readClaudeSessionMappingFull(projectPath, claudeSessionId);
@@ -11325,7 +11662,7 @@ function acquireLock(projectPath, claudeSessionId) {
   ensureDir(activeSessionsDir(projectPath));
   try {
     try {
-      const st = statSync3(lp);
+      const st = statSync4(lp);
       if (Date.now() - st.mtimeMs > LOCK_STALE_MS) unlinkSync3(lp);
     } catch {
     }
@@ -11352,7 +11689,7 @@ function waitForLock(projectPath, claudeSessionId) {
   }
   return false;
 }
-function ensureAxmeSessionForClaude(projectPath, claudeSessionId, transcriptPath, toolName) {
+function ensureAxmeSessionForClaude(projectPath, claudeSessionId, transcriptPath, toolName, ide) {
   const existing = readClaudeSessionMapping(projectPath, claudeSessionId);
   if (existing) {
     const existingSession = loadSession(projectPath, existing);
@@ -11361,7 +11698,8 @@ function ensureAxmeSessionForClaude(projectPath, claudeSessionId, transcriptPath
       attachClaudeSession(projectPath, existing, {
         id: claudeSessionId,
         transcriptPath,
-        role: "main"
+        role: "main",
+        ide
       });
       writeClaudeSessionMapping(projectPath, claudeSessionId, existing);
       return existing;
@@ -11375,7 +11713,7 @@ function ensureAxmeSessionForClaude(projectPath, claudeSessionId, transcriptPath
   try {
     const recheck = readClaudeSessionMapping(projectPath, claudeSessionId);
     if (recheck && recheck !== existing) {
-      attachClaudeSession(projectPath, recheck, { id: claudeSessionId, transcriptPath, role: "main" });
+      attachClaudeSession(projectPath, recheck, { id: claudeSessionId, transcriptPath, role: "main", ide });
       return recheck;
     }
     if (existing) {
@@ -11394,7 +11732,8 @@ function ensureAxmeSessionForClaude(projectPath, claudeSessionId, transcriptPath
     attachClaudeSession(projectPath, axmeSession.id, {
       id: claudeSessionId,
       transcriptPath,
-      role: "main"
+      role: "main",
+      ide
     });
     return axmeSession.id;
   } finally {
@@ -11485,7 +11824,7 @@ function listSessions(projectPath, opts) {
   const root = sessionsRoot(projectPath);
   const sessions = [];
   try {
-    for (const entry of readdirSync6(root, { withFileTypes: true })) {
+    for (const entry of readdirSync7(root, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       const session = readJson(join11(root, entry.name, "meta.json"));
       if (session) sessions.push(session);
@@ -11526,7 +11865,8 @@ function attachClaudeSession(projectPath, axmeSessionId, ref) {
     id: ref.id,
     transcriptPath: ref.transcriptPath,
     firstSeen: (/* @__PURE__ */ new Date()).toISOString(),
-    ...ref.role ? { role: ref.role } : {}
+    ...ref.role ? { role: ref.role } : {},
+    ...ref.ide ? { ide: ref.ide } : {}
   };
   session.claudeSessions.push(entry);
   writeSession(projectPath, session);
@@ -11716,7 +12056,7 @@ __export(backlog_exports, {
   toBacklogSlug: () => toBacklogSlug,
   updateBacklogItem: () => updateBacklogItem
 });
-import { readdirSync as readdirSync8, readFileSync as readFileSync10 } from "node:fs";
+import { readdirSync as readdirSync9, readFileSync as readFileSync11 } from "node:fs";
 import { join as join14 } from "node:path";
 function initBacklogStore(projectPath) {
   ensureDir(backlogDir(projectPath));
@@ -11758,8 +12098,8 @@ function updateBacklogItem(projectPath, idOrSlug, updates) {
 function listBacklogItems(projectPath, status) {
   const dir = backlogDir(projectPath);
   if (!pathExists(dir)) return [];
-  const files = readdirSync8(dir).filter((f) => f.startsWith("B-") && f.endsWith(".md")).sort();
-  const items = files.map((f) => parseBacklogFile(readFileSync10(join14(dir, f), "utf-8"))).filter(Boolean);
+  const files = readdirSync9(dir).filter((f) => f.startsWith("B-") && f.endsWith(".md")).sort();
+  const items = files.map((f) => parseBacklogFile(readFileSync11(join14(dir, f), "utf-8"))).filter(Boolean);
   if (status) return items.filter((i) => i.status === status);
   return items;
 }
@@ -12099,8 +12439,8 @@ __export(telemetry_exports, {
 import { homedir as homedir3 } from "node:os";
 import { join as join18 } from "node:path";
 import {
-  existsSync as existsSync6,
-  readFileSync as readFileSync11,
+  existsSync as existsSync7,
+  readFileSync as readFileSync12,
   writeFileSync as writeFileSync3,
   mkdirSync as mkdirSync2,
   appendFileSync as appendFileSync2,
@@ -12134,9 +12474,9 @@ function isCI() {
 function getOrCreateMid() {
   if (cachedMid) return { mid: cachedMid, isNew: false };
   const disabled = isTelemetryDisabled();
-  if (existsSync6(getMidFile())) {
+  if (existsSync7(getMidFile())) {
     try {
-      const raw = readFileSync11(getMidFile(), "utf-8").trim();
+      const raw = readFileSync12(getMidFile(), "utf-8").trim();
       if (/^[0-9a-f]{64}$/.test(raw)) {
         cachedMid = raw;
         return { mid: raw, isNew: false };
@@ -12161,8 +12501,8 @@ function getOrCreateMid() {
 }
 function readLastVersion() {
   try {
-    if (!existsSync6(getLastVersionFile())) return null;
-    return readFileSync11(getLastVersionFile(), "utf-8").trim() || null;
+    if (!existsSync7(getLastVersionFile())) return null;
+    return readFileSync12(getLastVersionFile(), "utf-8").trim() || null;
   } catch {
     return null;
   }
@@ -12208,8 +12548,8 @@ async function postEvents(events) {
 }
 function readQueue() {
   try {
-    if (!existsSync6(getQueueFile())) return [];
-    const raw = readFileSync11(getQueueFile(), "utf-8");
+    if (!existsSync7(getQueueFile())) return [];
+    const raw = readFileSync12(getQueueFile(), "utf-8");
     const lines = raw.split("\n").filter((l) => l.trim());
     const out = [];
     for (const line of lines) {
@@ -12234,7 +12574,7 @@ function writeQueue(events) {
 function appendToQueue(event) {
   try {
     mkdirSync2(getStateDir(), { recursive: true });
-    if (existsSync6(getQueueFile())) {
+    if (existsSync7(getQueueFile())) {
       const existing = readQueue();
       if (existing.length >= QUEUE_MAX_EVENTS) {
         existing.push(event);
@@ -12366,7 +12706,7 @@ var init_telemetry = __esm({
 
 // src/server.ts
 import { join as join20 } from "node:path";
-import { existsSync as existsSync8 } from "node:fs";
+import { existsSync as existsSync9 } from "node:fs";
 
 // node_modules/zod/v3/helpers/util.js
 var util;
@@ -35684,39 +36024,8 @@ var StdioServerTransport = class {
   }
 };
 
-// src/storage/oracle.ts
-init_engine();
-init_types();
-import { join as join2 } from "node:path";
-var ORACLE_DIR = "oracle";
-function loadOracleFiles(projectPath) {
-  const dir = oracleDir(projectPath);
-  if (!pathExists(dir)) return null;
-  const stack = readSafe(join2(dir, "stack.md"));
-  const structure = readSafe(join2(dir, "structure.md"));
-  const patterns = readSafe(join2(dir, "patterns.md"));
-  const glossary = readSafe(join2(dir, "glossary.md"));
-  if (!stack && !structure && !patterns && !glossary) return null;
-  return { stack, structure, patterns, glossary };
-}
-function getOracleSections(projectPath) {
-  const files = loadOracleFiles(projectPath);
-  if (!files) return ["Oracle not initialized. Run axme_init first."];
-  const sections = [];
-  if (files.stack) sections.push("# Stack\n\n" + files.stack);
-  if (files.structure) sections.push("# Structure\n\n" + files.structure);
-  if (files.patterns) sections.push("# Patterns\n\n" + files.patterns);
-  if (files.glossary) sections.push("# Glossary\n\n" + files.glossary);
-  return sections;
-}
-function oracleExists(projectPath) {
-  return pathExists(join2(oracleDir(projectPath), "stack.md"));
-}
-function oracleDir(projectPath) {
-  return join2(projectPath, AXME_CODE_DIR, ORACLE_DIR);
-}
-
 // src/tools/context.ts
+init_oracle();
 init_decisions();
 init_engine();
 
@@ -35724,13 +36033,13 @@ init_engine();
 init_js_yaml();
 init_engine();
 init_types();
-import { readFileSync as readFileSync4 } from "node:fs";
+import { readFileSync as readFileSync5 } from "node:fs";
 import { join as join5 } from "node:path";
 var CONFIG_FILE = "config.yaml";
 function readConfig(projectPath) {
   const path = configPath(projectPath);
   if (!pathExists(path)) return { ...DEFAULT_PROJECT_CONFIG };
-  return parseConfig(readFileSync4(path, "utf-8"));
+  return parseConfig(readFileSync5(path, "utf-8"));
 }
 function configExists(projectPath) {
   return pathExists(configPath(projectPath));
@@ -35766,7 +36075,7 @@ function parseConfig(content) {
 // src/storage/embeddings.ts
 init_engine();
 import { createRequire } from "node:module";
-import { existsSync as existsSync2, statSync as statSync2 } from "node:fs";
+import { existsSync as existsSync3, statSync as statSync3 } from "node:fs";
 import { homedir } from "node:os";
 import { join as join6 } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -35781,7 +36090,7 @@ function embeddingsPath(projectPath) {
   return join6(indexDir(projectPath), EMBEDDINGS_FILENAME);
 }
 function isRuntimeInstalled() {
-  return existsSync2(join6(RUNTIME_DIR, "node_modules", "@huggingface", "transformers"));
+  return existsSync3(join6(RUNTIME_DIR, "node_modules", "@huggingface", "transformers"));
 }
 var _cachedEmbedder = null;
 async function loadEmbedder() {
@@ -35892,7 +36201,7 @@ init_safety();
 init_memory();
 init_workspace_merge();
 import { join as join15 } from "node:path";
-import { existsSync as existsSync5 } from "node:fs";
+import { existsSync as existsSync6 } from "node:fs";
 
 // src/storage/test-plan.ts
 init_engine();
@@ -35988,7 +36297,7 @@ init_plans();
 init_sessions();
 
 // src/utils/workspace-detector.ts
-import { readFileSync as readFileSync9, readdirSync as readdirSync7, existsSync as existsSync4, statSync as statSync4 } from "node:fs";
+import { readFileSync as readFileSync10, readdirSync as readdirSync8, existsSync as existsSync5, statSync as statSync5 } from "node:fs";
 import { join as join12, resolve as resolve5, dirname as dirname3, basename as basename4 } from "node:path";
 function detectWorkspace(cwd) {
   const root = resolve5(cwd);
@@ -35999,14 +36308,15 @@ function detectWorkspace(cwd) {
   return enrichWithGitRepos(root, result);
 }
 function enrichWithGitRepos(root, ws) {
-  const knownPaths = new Set(ws.projects.map((p) => p.path.replace(/^\.\/?/, "")));
+  const stripDotPrefix = (p) => p.replace(/^\.[\\/]?/, "");
+  const knownPaths = new Set(ws.projects.map((p) => stripDotPrefix(p.path)));
   const newProjects = [...ws.projects];
   for (const entry of safeReaddir(root)) {
     if (entry.startsWith(".") || ["node_modules", "dist", "build", ".git"].includes(entry)) continue;
-    const normalized = entry.replace(/^\.\/?/, "");
+    const normalized = stripDotPrefix(entry);
     if (knownPaths.has(normalized)) continue;
     const entryPath = join12(root, entry);
-    if (isDir(entryPath) && existsSync4(join12(entryPath, ".git"))) {
+    if (isDir(entryPath) && existsSync5(join12(entryPath, ".git"))) {
       newProjects.push({ path: normalized, name: normalized });
       knownPaths.add(normalized);
     }
@@ -36018,7 +36328,7 @@ function detectVSCodeWorkspace(root) {
   if (files.length === 0) return null;
   const filePath = join12(root, files[0]);
   try {
-    const raw = readFileSync9(filePath, "utf-8");
+    const raw = readFileSync10(filePath, "utf-8");
     const cleaned = raw.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
     const data = JSON.parse(cleaned);
     if (!data.folders || !Array.isArray(data.folders)) return null;
@@ -36034,7 +36344,7 @@ function detectDotnetSolution(root) {
   if (files.length === 0) return null;
   const filePath = join12(root, files[0]);
   try {
-    const content = readFileSync9(filePath, "utf-8");
+    const content = readFileSync10(filePath, "utf-8");
     const projectRegex = /Project\("[^"]*"\)\s*=\s*"([^"]*)",\s*"([^"]*)"/g;
     const solutionFolderGuid = "2150E333-8FDC-42A3-9474-1A3956D46DE8";
     const projects = [];
@@ -36056,9 +36366,9 @@ function detectDotnetSolution(root) {
 }
 function detectJetBrains(root) {
   const modulesPath = join12(root, ".idea", "modules.xml");
-  if (!existsSync4(modulesPath)) return null;
+  if (!existsSync5(modulesPath)) return null;
   try {
-    const content = readFileSync9(modulesPath, "utf-8");
+    const content = readFileSync10(modulesPath, "utf-8");
     const moduleRegex = /filepath="\$PROJECT_DIR\$\/([^"]+\.iml)"/g;
     const projects = [];
     let match;
@@ -36079,7 +36389,7 @@ function detectSublime(root) {
   if (files.length === 0) return null;
   const filePath = join12(root, files[0]);
   try {
-    const data = JSON.parse(readFileSync9(filePath, "utf-8"));
+    const data = JSON.parse(readFileSync10(filePath, "utf-8"));
     if (!data.folders || !Array.isArray(data.folders)) return null;
     const projects = data.folders.filter((f) => f.path && f.path !== ".").map((f) => ({ path: f.path, name: f.name ?? basename4(f.path) }));
     if (projects.length < 2) return null;
@@ -36090,9 +36400,9 @@ function detectSublime(root) {
 }
 function detectRush(root) {
   const filePath = join12(root, "rush.json");
-  if (!existsSync4(filePath)) return null;
+  if (!existsSync5(filePath)) return null;
   try {
-    const data = JSON.parse(readFileSync9(filePath, "utf-8"));
+    const data = JSON.parse(readFileSync10(filePath, "utf-8"));
     if (!data.projects || !Array.isArray(data.projects)) return null;
     const projects = data.projects.map((p) => ({
       path: p.projectFolder,
@@ -36106,9 +36416,9 @@ function detectRush(root) {
 }
 function detectPnpmWorkspace(root) {
   const filePath = join12(root, "pnpm-workspace.yaml");
-  if (!existsSync4(filePath)) return null;
+  if (!existsSync5(filePath)) return null;
   try {
-    const content = readFileSync9(filePath, "utf-8");
+    const content = readFileSync10(filePath, "utf-8");
     const packagesMatch = content.match(/packages:\s*\n((?:\s+-\s+.+\n?)*)/);
     if (!packagesMatch) return null;
     const globs = packagesMatch[1].split("\n").map((line) => line.replace(/^\s*-\s*['"]?/, "").replace(/['"]?\s*$/, "").trim()).filter(Boolean).filter((g) => !g.startsWith("!"));
@@ -36121,9 +36431,9 @@ function detectPnpmWorkspace(root) {
 }
 function detectNpmWorkspace(root) {
   const filePath = join12(root, "package.json");
-  if (!existsSync4(filePath)) return null;
+  if (!existsSync5(filePath)) return null;
   try {
-    const data = JSON.parse(readFileSync9(filePath, "utf-8"));
+    const data = JSON.parse(readFileSync10(filePath, "utf-8"));
     if (!data.workspaces) return null;
     const globs = Array.isArray(data.workspaces) ? data.workspaces : data.workspaces.packages ?? [];
     if (globs.length === 0) return null;
@@ -36136,9 +36446,9 @@ function detectNpmWorkspace(root) {
 }
 function detectLerna(root) {
   const filePath = join12(root, "lerna.json");
-  if (!existsSync4(filePath)) return null;
+  if (!existsSync5(filePath)) return null;
   try {
-    const data = JSON.parse(readFileSync9(filePath, "utf-8"));
+    const data = JSON.parse(readFileSync10(filePath, "utf-8"));
     const globs = data.packages ?? ["packages/*"];
     const projects = resolveGlobs(root, globs);
     if (projects.length < 2) return null;
@@ -36148,13 +36458,13 @@ function detectLerna(root) {
   }
 }
 function detectNx(root) {
-  if (!existsSync4(join12(root, "nx.json"))) return null;
+  if (!existsSync5(join12(root, "nx.json"))) return null;
   const projects = [];
   for (const dir of ["apps", "packages", "libs", "projects"]) {
     const fullDir = join12(root, dir);
-    if (!existsSync4(fullDir)) continue;
+    if (!existsSync5(fullDir)) continue;
     for (const entry of safeReaddir(fullDir)) {
-      if (existsSync4(join12(fullDir, entry, "project.json"))) {
+      if (existsSync5(join12(fullDir, entry, "project.json"))) {
         projects.push({ path: join12(dir, entry), name: entry });
       }
     }
@@ -36162,7 +36472,7 @@ function detectNx(root) {
   for (const entry of safeReaddir(root)) {
     if (entry.startsWith(".") || ["node_modules", "dist", "build"].includes(entry)) continue;
     const entryPath = join12(root, entry);
-    if (isDir(entryPath) && existsSync4(join12(entryPath, "project.json")) && !projects.some((p) => p.path === entry)) {
+    if (isDir(entryPath) && existsSync5(join12(entryPath, "project.json")) && !projects.some((p) => p.path === entry)) {
       projects.push({ path: entry, name: entry });
     }
   }
@@ -36172,10 +36482,10 @@ function detectNx(root) {
 function detectGradle(root) {
   const groovyPath = join12(root, "settings.gradle");
   const kotlinPath = join12(root, "settings.gradle.kts");
-  const filePath = existsSync4(groovyPath) ? groovyPath : existsSync4(kotlinPath) ? kotlinPath : null;
+  const filePath = existsSync5(groovyPath) ? groovyPath : existsSync5(kotlinPath) ? kotlinPath : null;
   if (!filePath) return null;
   try {
-    const content = readFileSync9(filePath, "utf-8");
+    const content = readFileSync10(filePath, "utf-8");
     const includeRegex = /include\s*\(?([^)]+)\)?/g;
     const projects = [];
     let match;
@@ -36196,9 +36506,9 @@ function detectGradle(root) {
 }
 function detectMaven(root) {
   const filePath = join12(root, "pom.xml");
-  if (!existsSync4(filePath)) return null;
+  if (!existsSync5(filePath)) return null;
   try {
-    const content = readFileSync9(filePath, "utf-8");
+    const content = readFileSync10(filePath, "utf-8");
     const moduleRegex = /<module>([^<]+)<\/module>/g;
     const projects = [];
     let match;
@@ -36216,9 +36526,9 @@ function detectMaven(root) {
 }
 function detectGitSubmodules(root) {
   const filePath = join12(root, ".gitmodules");
-  if (!existsSync4(filePath)) return null;
+  if (!existsSync5(filePath)) return null;
   try {
-    const content = readFileSync9(filePath, "utf-8");
+    const content = readFileSync10(filePath, "utf-8");
     const pathRegex = /path\s*=\s*(.+)/g;
     const projects = [];
     let match;
@@ -36237,7 +36547,7 @@ function detectMultiGit(root) {
   for (const entry of safeReaddir(root)) {
     if (entry.startsWith(".") || ["node_modules", "dist", "build", ".git"].includes(entry)) continue;
     const entryPath = join12(root, entry);
-    if (isDir(entryPath) && existsSync4(join12(entryPath, ".git"))) {
+    if (isDir(entryPath) && existsSync5(join12(entryPath, ".git"))) {
       projects.push({ path: entry, name: entry });
     }
   }
@@ -36246,14 +36556,14 @@ function detectMultiGit(root) {
 }
 function safeReaddir(dir) {
   try {
-    return readdirSync7(dir);
+    return readdirSync8(dir);
   } catch {
     return [];
   }
 }
 function isDir(path) {
   try {
-    return statSync4(path).isDirectory();
+    return statSync5(path).isDirectory();
   } catch {
     return false;
   }
@@ -36261,14 +36571,14 @@ function isDir(path) {
 function resolveGlobs(root, globs) {
   const projects = [];
   for (const glob of globs) {
-    if (glob.endsWith("/*") || glob.endsWith("/**")) {
-      const dir = glob.replace(/\/\*\*?$/, "");
+    if (glob.endsWith("/*") || glob.endsWith("/**") || glob.endsWith("\\*") || glob.endsWith("\\**")) {
+      const dir = glob.replace(/[\\/]\*\*?$/, "");
       const fullDir = join12(root, dir);
-      if (!existsSync4(fullDir)) continue;
+      if (!existsSync5(fullDir)) continue;
       for (const entry of safeReaddir(fullDir)) {
         const entryPath = join12(fullDir, entry);
         if (!isDir(entryPath)) continue;
-        if (existsSync4(join12(entryPath, "package.json"))) {
+        if (existsSync5(join12(entryPath, "package.json"))) {
           const path = join12(dir, entry);
           if (!projects.some((p) => p.path === path)) {
             projects.push({ path, name: entry });
@@ -36277,7 +36587,7 @@ function resolveGlobs(root, globs) {
       }
     } else {
       const fullPath = join12(root, glob);
-      if (existsSync4(fullPath) && isDir(fullPath)) {
+      if (existsSync5(fullPath) && isDir(fullPath)) {
         if (!projects.some((p) => p.path === glob)) {
           projects.push({ path: glob, name: basename4(glob) });
         }
@@ -36292,7 +36602,7 @@ init_questions();
 init_backlog();
 function buildStorageRootHeader(projectPath, workspacePath) {
   const ws = detectWorkspace(projectPath);
-  const hasGit = existsSync5(join15(projectPath, ".git"));
+  const hasGit = existsSync6(join15(projectPath, ".git"));
   const isWorkspace2 = hasGit ? false : ws.type !== "single" || workspacePath != null && workspacePath !== projectPath;
   const sessionType = isWorkspace2 ? "workspace (multi-repo)" : "single-repo";
   const storageRoot = join15(projectPath, AXME_CODE_DIR);
@@ -36302,9 +36612,9 @@ function buildStorageRootHeader(projectPath, workspacePath) {
     `- Session origin: ${projectPath}`,
     `- Session type: ${sessionType}`,
     `- Storage root: ${storageRoot}`,
-    `- Sessions dir: ${storageRoot}/sessions`,
-    `- Audit logs dir: ${storageRoot}/audit-logs`,
-    `- Audit worker logs: ${storageRoot}/audit-worker-logs`,
+    `- Sessions dir: ${join15(storageRoot, "sessions")}`,
+    `- Audit logs dir: ${join15(storageRoot, "audit-logs")}`,
+    `- Audit worker logs: ${join15(storageRoot, "audit-worker-logs")}`,
     "",
     "**CRITICAL**: For any direct inspection of .axme-code/ files via Bash (ls, cat, grep, find, etc.), use ABSOLUTE paths rooted at the Storage root above. Do NOT use relative paths from your cwd \u2014 in a multi-repo workspace, your cwd may point into a child repo that has its own separate .axme-code/ storage, and you will silently read the wrong dataset. The Storage root above is the only path that corresponds to this session's live data.",
     "",
@@ -36322,7 +36632,7 @@ function getFullContextSections(projectPath, workspacePath) {
     if (pathExists(setupLock)) {
       return [parts[0] + "\n\nSetup is already running. Wait for it to finish, then call axme_context again."];
     }
-    return [parts[0] + "\n\nProject not initialized. FIRST tell the user: 'Initializing AXME Code knowledge base for this project. This takes 1-2 minutes on first run.' THEN run `axme-code setup --plugin` via Bash tool. Do NOT ask permission \u2014 just inform and run."];
+    return [parts[0] + "\n\nProject not initialized \u2014 `.axme-code/` is missing in this workspace. **Do NOT run `axme-code setup` yourself.** Initialization is the user's job (Cursor: run `AXME: Setup` from Command Palette; Claude Code: run `axme-code setup` in terminal). Tell the user this and stop; once they finish setup, call `axme_context` again and the knowledge base will load."];
   }
   if (workspacePath && workspacePath !== projectPath) {
     const wsRules = loadSafetyRules(workspacePath);
@@ -36368,7 +36678,7 @@ function getFullContextSections(projectPath, workspacePath) {
     const files = loadOracleFiles(projectPath);
     const oracleIsMinimal = files && files.stack.length < 200 && !files.patterns.includes("CLAUDE.md");
     if (oracleIsMinimal) {
-      parts.push("**WARNING:** This project was initialized with deterministic scan only (no LLM). Run `axme-code setup " + projectPath + "` for deep LLM scan.");
+      parts.push("**WARNING:** This project was initialized with deterministic scan only (no LLM). Tell the user to re-run `axme-code setup " + projectPath + "` for a deep LLM scan. **Do not run it yourself** \u2014 initialization is the user's job.");
     }
   }
   const pendingProject = listPendingAudits(projectPath);
@@ -36466,9 +36776,7 @@ function buildSearchModeCatalog(projectPath, workspacePath) {
     lines.push("### Decisions");
     lines.push("");
     for (const d of decisions) {
-      const enforce = d.enforce ?? "info";
-      const desc = d.decision ? d.decision.replace(/\s+/g, " ").slice(0, 200) : "";
-      lines.push(`- [${enforce}] **${d.id}** \u2014 ${d.title}${desc ? ` \u2014 ${desc}` : ""}`);
+      lines.push(renderDecisionCatalogLine(d));
     }
     lines.push("");
   }
@@ -36476,16 +36784,54 @@ function buildSearchModeCatalog(projectPath, workspacePath) {
     lines.push("### Memories");
     lines.push("");
     for (const m of memories) {
-      const desc = m.description ? m.description.replace(/\s+/g, " ").slice(0, 200) : "";
-      lines.push(`- [${m.type}] **${m.slug}** \u2014 ${m.title}${desc ? ` \u2014 ${desc}` : ""}`);
+      lines.push(renderMemoryCatalogLine(m));
     }
     lines.push("");
   }
   return lines.join("\n");
 }
+function renderDecisionCatalogLine(d) {
+  const enforce = d.enforce ?? "info";
+  const desc = d.decision ? d.decision.replace(/\s+/g, " ").slice(0, 200) : "";
+  return `- [${enforce}] **${d.id}** \u2014 ${d.title}${desc ? ` \u2014 ${desc}` : ""}`;
+}
+function renderMemoryCatalogLine(m) {
+  const desc = m.description ? m.description.replace(/\s+/g, " ").slice(0, 200) : "";
+  return `- [${m.type}] **${m.slug}** \u2014 ${m.title}${desc ? ` \u2014 ${desc}` : ""}`;
+}
+function buildDecisionsCatalogString(projectPath, workspacePath) {
+  const decisions = listDecisionsMerged(projectPath, workspacePath);
+  const lines = [
+    "## Decisions Catalog (search mode)",
+    "",
+    `${decisions.length} decision(s). Bodies NOT loaded \u2014 fetch via axme_get_decision(id_or_slug) or axme_search_kb(query).`,
+    ""
+  ];
+  if (decisions.length === 0) {
+    lines.push("No decisions recorded.");
+    return lines.join("\n");
+  }
+  for (const d of decisions) lines.push(renderDecisionCatalogLine(d));
+  return lines.join("\n");
+}
+function buildMemoriesCatalogString(projectPath, workspacePath) {
+  const memories = listMemoriesMerged(projectPath, workspacePath);
+  const lines = [
+    "## Memories Catalog (search mode)",
+    "",
+    `${memories.length} memory(ies). Bodies NOT loaded \u2014 fetch via axme_get_memory(slug) or axme_search_kb(query).`,
+    ""
+  ];
+  if (memories.length === 0) {
+    lines.push("No memories recorded.");
+    return lines.join("\n");
+  }
+  for (const m of memories) lines.push(renderMemoryCatalogLine(m));
+  return lines.join("\n");
+}
 function buildSearchModeInstructions(runtimeInstalled) {
   const searchAvailable = runtimeInstalled ? "- `axme_search_kb(query, type?, k?)` \u2014 semantic search across both" : "- `axme_search_kb(query, ...)` \u2014 currently UNAVAILABLE (transformers runtime not installed; falls back to a hint message)";
-  return [
+  const lines = [
     "## Search mode active \u2014 bodies fetched on demand",
     "",
     "You have a catalog of every memory and decision above (titles + descriptions only).",
@@ -36498,12 +36844,30 @@ function buildSearchModeInstructions(runtimeInstalled) {
     "- `axme_get_decision(id_or_slug)` \u2014 full body of one decision",
     searchAvailable,
     "",
-    runtimeInstalled ? 'Use `axme_search_kb` for fuzzy lookups ("how did we handle X?"). Use `axme_get_*` when you already know the slug from the catalog.' : "Without the runtime, navigate the catalog above by topic and fetch bodies via `axme_get_*`. To enable semantic search: `axme-code config set context.mode search` (re-runs install)."
-  ].join("\n");
+    "## Active KB usage (when to call search/get)",
+    "",
+    "**MUST** call `axme_search_kb` (or `axme_get_*` when slug is known) when ANY of these triggers fire:",
+    "",
+    '- User asks "how did we\u2026", "why did we\u2026", "\u0447\u0442\u043E \u043C\u044B \u0440\u0435\u0448\u0438\u043B\u0438 \u043F\u0440\u043E\u2026", "why is X this way?" \u2192 search the topic.',
+    "- About to write or modify code that touches: git, safety hooks, storage, agent SDK, build, release, telemetry, auth, MCP tools \u2192 search the area first.",
+    "- About to suggest a fix for a bug \u2192 search similar past failures (memory type=feedback) before proposing.",
+    "- User mentions a library, platform, tool, or error message by name \u2192 search that name.",
+    "- A catalog title looks partially relevant but its 1-line description is too short to decide \u2192 fetch the body.",
+    "- Before any architectural recommendation or new pattern \u2192 search decisions for that subsystem to avoid contradiction or duplication.",
+    "- Before saving a new decision/memory \u2192 search to check if a similar one already exists (avoids dupes).",
+    "",
+    "Skipping search has caused real regressions in this project (force-pushing main, missing #!axme gate suffix,",
+    "duplicating an existing decision). The catalog scan is free; semantic search is sub-second and uses zero",
+    "API tokens (runs locally on CPU). When in doubt, search."
+  ];
+  lines.push("");
+  lines.push(runtimeInstalled ? "Use `axme_search_kb` for fuzzy lookups. Use `axme_get_*` when you already know the slug from the catalog." : "Runtime not installed: navigate the catalog above by topic and fetch bodies via `axme_get_*`. To enable semantic search: `axme-code config set context.mode search` (re-runs install).");
+  return lines.join("\n");
 }
 
 // src/server.ts
 init_memory();
+init_oracle();
 init_decisions();
 
 // src/utils/pagination.ts
@@ -36555,6 +36919,7 @@ init_sessions();
 init_worklog();
 init_decisions();
 init_memory();
+init_oracle();
 init_safety();
 init_engine();
 init_types();
@@ -36658,8 +37023,14 @@ async function searchKbTool(projectPath, input) {
     return [
       "Semantic search runtime is not installed.",
       "",
-      "To enable: `axme-code config set context.mode search`",
-      "(installs ~100MB transformers.js + ~30MB MiniLM model, one-time).",
+      "To enable:",
+      "  \u2022 CLI:    `axme-code config set context.mode search`",
+      "  \u2022 Cursor: sidebar \u2192 Knowledge base \u2192 Search mode \u2192 Enable",
+      "            (or Command Palette \u2192 AXME: Enable semantic search)",
+      "",
+      "Installs @huggingface/transformers (~770 MB on Linux with all",
+      "platform prebuilts, less on macOS/Windows) + builds the initial",
+      "embeddings index. One-time per machine.",
       "",
       "In the meantime, list all entries with axme_memories / axme_decisions",
       "and use axme_get_memory(slug) / axme_get_decision(id) for full bodies."
@@ -36707,7 +37078,7 @@ import { spawn } from "node:child_process";
 import { openSync as openSync3, closeSync as closeSync3 } from "node:fs";
 import { join as join17 } from "node:path";
 var AUDIT_WORKER_LOGS_DIR = "audit-worker-logs";
-function spawnDetachedAuditWorker(workspacePath, sessionId) {
+function spawnDetachedAuditWorker(workspacePath, sessionId, ide) {
   const logsDir = join17(workspacePath, AXME_CODE_DIR, AUDIT_WORKER_LOGS_DIR);
   ensureDir(logsDir);
   const logPath = join17(logsDir, `${sessionId}.log`);
@@ -36715,9 +37086,11 @@ function spawnDetachedAuditWorker(workspacePath, sessionId) {
   try {
     const cliPath = process.argv[1];
     if (!cliPath) throw new Error("audit-spawner: cannot determine CLI path from process.argv[1]");
+    const argv = [cliPath, "audit-session", "--workspace", workspacePath, "--session", sessionId];
+    if (ide) argv.push("--ide", ide);
     const child = spawn(
       process.execPath,
-      [cliPath, "audit-session", "--workspace", workspacePath, "--session", sessionId],
+      argv,
       {
         detached: true,
         stdio: ["ignore", fd, fd],
@@ -36726,7 +37099,7 @@ function spawnDetachedAuditWorker(workspacePath, sessionId) {
     );
     child.unref();
     process.stderr.write(
-      `AXME: spawned detached audit worker pid=${child.pid} session=${sessionId} log=${logPath}
+      `AXME: spawned detached audit worker pid=${child.pid} session=${sessionId} ide=${ide ?? "claude-code"} log=${logPath}
 `
     );
   } finally {
@@ -36742,7 +37115,7 @@ init_types();
 import { homedir as homedir4 } from "node:os";
 import { join as join19, resolve as resolve6, basename as basename5 } from "node:path";
 import {
-  readFileSync as readFileSync12,
+  readFileSync as readFileSync13,
   writeFileSync as writeFileSync4,
   mkdirSync as mkdirSync3,
   renameSync as renameSync2,
@@ -36785,7 +37158,7 @@ function getBinaryPath() {
 }
 function readCache() {
   try {
-    return JSON.parse(readFileSync12(CACHE_FILE, "utf-8"));
+    return JSON.parse(readFileSync13(CACHE_FILE, "utf-8"));
   } catch {
     return null;
   }
@@ -36905,8 +37278,15 @@ async function backgroundAutoUpdate() {
 
 // src/server.ts
 init_telemetry();
-var serverCwd = process.cwd();
-var serverHasGit = existsSync8(join20(serverCwd, ".git"));
+function resolveServerRoot() {
+  const argv = process.argv;
+  const flagIdx = argv.indexOf("--workspace");
+  if (flagIdx > -1 && argv[flagIdx + 1]) return argv[flagIdx + 1];
+  if (process.env.AXME_WORKSPACE) return process.env.AXME_WORKSPACE;
+  return process.cwd();
+}
+var serverCwd = resolveServerRoot();
+var serverHasGit = existsSync9(join20(serverCwd, ".git"));
 var serverWorkspace = detectWorkspace(serverCwd);
 var isWorkspace = serverHasGit ? false : serverWorkspace.type !== "single";
 var defaultProjectPath = serverCwd;
@@ -37006,6 +37386,24 @@ function buildInstructions() {
   } else {
     parts.push("Call axme_context at session start. It returns compact meta and instructions to call axme_oracle, axme_decisions, axme_memories in parallel.");
   }
+  const axmeDirExists = existsSync9(join20(defaultProjectPath, ".axme-code"));
+  if (!axmeDirExists) {
+    parts.push(
+      `PROJECT SETUP REQUIRED (HIGHEST PRIORITY): this project has no .axme-code/ directory. BEFORE doing anything else, tell the user in their language: "AXME is not set up for this project. Want me to do it now? I'll scan the repo and save architecture decisions, patterns and safety rules into .axme-code/ \u2014 runs inline on your Cursor subscription, no extra cost." If the user agrees (any affirmative in any language), EXECUTE setup. Important \u2014 setup is a sequence of MCP TOOL CALLS, not a plan to describe. Bullet-listing what you would save in prose is a FAILURE \u2014 call the tool instead. Required:
+  1. Scan: read package.json/README/main configs + key source folders to understand stack, conventions, layout.
+  2. EXECUTE at least 5 axme_save_decision calls (scope=["workspace"], with concrete rationale tied to evidence).
+  3. EXECUTE at least 3 axme_save_memory calls (type="pattern", scope=["workspace"]) for gotchas / edge cases.
+  4. EXECUTE axme_update_safety for dangerous patterns in scripts/ or destructive commands.
+  4b. EXECUTE 4 axme_save_oracle calls \u2014 one per section (stack, structure, patterns, glossary). Stack: languages + frameworks + build tools. Structure: top-level dirs + entry points. Patterns: observed conventions. Glossary: project-specific terms. Oracle is the high-level overview the agent reads at startup of every future session.
+  5. ONLY after all tool calls are committed, summarize:
+     First line: "Saved X decisions, Y memories, Z safety rules + N preset rules" where N is the count of enforcement entries (deniedPrefixes + deniedCommands + protectedBranches + deniedPaths + readOnlyPaths) ALREADY in .axme-code/safety/rules.yaml that you did NOT add this session.
+     Then list those preset rules grouped by section (one per line under each header) and add: "These presets ship with AXME Code. You can edit .axme-code/safety/rules.yaml directly to add project-specific rules or remove ones you don't need."
+     Then list DECISIONS saved this session \u2014 one per line as "  - D-NNN: <short title>". Header: "Decisions saved this session (full bodies in .axme-code/decisions/):". Keep titles short \u2014 rationale already lives in the .md files.
+     Then list MEMORIES saved \u2014 one per line as "  - <slug>: <short title>". Header: "Memories saved this session (full bodies in .axme-code/memory/patterns/ and memory/feedback/):".
+     End with verbatim line: "All saved artifacts are persistent across sessions. Open the folders above to read full bodies, or ask me 'show decision D-NNN' / 'show memory <slug>' to fetch any of them."
+If you catch yourself writing "Save decision: X / Save memory: Y" as text, STOP and call axme_save_decision / axme_save_memory instead. The .axme-code/ directory is auto-bootstrapped by the first save call \u2014 you do not need to create it beforehand. After setup, proceed with the user's original request.`
+    );
+  }
   parts.push("TRUNCATED OUTPUT RULE: if ANY MCP tool output is truncated or saved to a file (you see 'Output too large' or 'saved to file'), you MUST use the Read tool to read the full file content into your context. Do not proceed with partial data.");
   parts.push("Save memories, decisions, and safety rules immediately when discovered during work.");
   parts.push('GIT COMMIT/PUSH GATE: every git commit and git push command MUST end with `#!axme pr=<NUMBER|none> repo=<OWNER/REPO>`. Example: `git commit -m "fix bug" #!axme pr=42 repo=AxmeAI/axme-code`. Use pr=none if no PR exists yet. Without this suffix the command will be blocked.');
@@ -37013,7 +37411,7 @@ function buildInstructions() {
   parts.push("SESSION CLOSE: when the user asks to close/end the session (any language), call axme_begin_close to get the close checklist. Follow it: extract memories/decisions/safety (choosing correct scope for each), prepare handoff data, then call axme_finalize_close with everything. After finalize, output to the user: storage summary (what saved where), then startup_text.");
   parts.push("DECISION CONFLICT RULE: if two active decisions contradict each other, treat the NEWER one (by date) as authoritative. The older one is a candidate for supersede at next audit.");
   parts.push(
-    `STORAGE ROOT: ${defaultProjectPath}/.axme-code \u2014 for any direct inspection of .axme-code/ files via Bash (ls, cat, grep, find), use this ABSOLUTE path. Do NOT use relative paths from your cwd; in a multi-repo workspace your cwd may point to a child repo with its own separate .axme-code/ storage.`
+    `STORAGE ROOT: ${join20(defaultProjectPath, ".axme-code")} \u2014 for any direct inspection of .axme-code/ files via Bash (ls, cat, grep, find), use this ABSOLUTE path. Do NOT use relative paths from your cwd; in a multi-repo workspace your cwd may point to a child repo with its own separate .axme-code/ storage.`
   );
   parts.push(
     "IMPORTANT: if axme_context output contains a 'Pending audits' section, a previous session's audit is still running and the knowledge base is incomplete. Tell the user, offer to wait and re-run axme_context or track with a TODO."
@@ -37098,7 +37496,7 @@ server.tool(
 );
 server.tool(
   "axme_decisions",
-  "Show all project decisions with enforce levels.",
+  "Show project decisions. Output adapts to context.mode: full \u2192 enforce levels + decision body; search \u2192 catalog (id + title + 1-line description, fetch bodies via axme_get_decision).",
   {
     project_path: external_exports3.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
     page: external_exports3.number().optional().describe("Page number (1-based). Omit for first page. Follow pagination instructions if output is split.")
@@ -37106,8 +37504,16 @@ server.tool(
   async ({ project_path, page }) => {
     const resolved = pp(project_path);
     deliveredContext.add("decisions:" + resolved);
-    let sections = getDecisionSections(resolved);
-    if (isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath && deliveredContext.has("decisions:" + defaultWorkspacePath)) {
+    const config2 = readConfig(resolved);
+    const wsAlreadyDelivered = isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath && deliveredContext.has("decisions:" + defaultWorkspacePath);
+    let sections;
+    if (config2.contextMode === "search") {
+      const wsForMerge = isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath && !wsAlreadyDelivered ? defaultWorkspacePath : void 0;
+      sections = [buildDecisionsCatalogString(resolved, wsForMerge)];
+    } else {
+      sections = getDecisionSections(resolved);
+    }
+    if (wsAlreadyDelivered) {
       sections = [...sections, "*(Workspace decisions already loaded)*"];
     }
     const result = paginateSections(sections, page ?? 1, "axme_decisions", { project_path });
@@ -37116,7 +37522,7 @@ server.tool(
 );
 server.tool(
   "axme_memories",
-  "Show all project memories (feedback + patterns). Call at session start alongside axme_oracle and axme_decisions.",
+  "Show project memories (feedback + patterns). Output adapts to context.mode: full \u2192 titles + descriptions grouped by type; search \u2192 catalog (slug + title + 1-line description, fetch bodies via axme_get_memory). Call at session start alongside axme_oracle and axme_decisions.",
   {
     project_path: external_exports3.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
     page: external_exports3.number().optional().describe("Page number (1-based). Omit for first page. Follow pagination instructions if output is split.")
@@ -37124,15 +37530,25 @@ server.tool(
   async ({ project_path, page }) => {
     const resolved = pp(project_path);
     deliveredContext.add("memories:" + resolved);
+    const config2 = readConfig(resolved);
+    const wsAlreadyDelivered = isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath && deliveredContext.has("memories:" + defaultWorkspacePath);
+    const isRepoCall = isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath;
+    const wsForMerge = isRepoCall && !wsAlreadyDelivered ? defaultWorkspacePath : void 0;
     let sections;
-    if (isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath && deliveredContext.has("memories:" + defaultWorkspacePath)) {
+    if (config2.contextMode === "search") {
+      sections = [buildMemoriesCatalogString(resolved, wsForMerge ?? void 0)];
+      if (wsAlreadyDelivered) sections.push("*(Workspace memories already loaded)*");
+      const result2 = paginateSections(sections, page ?? 1, "axme_memories", { project_path });
+      return { content: [{ type: "text", text: result2.text }] };
+    }
+    if (wsAlreadyDelivered) {
       sections = getMemorySections(resolved);
       if (sections.length === 0) sections = ["No repo-specific memories."];
       sections.push("*(Workspace memories already loaded)*");
-    } else if (isWorkspace && defaultWorkspacePath && resolved !== defaultWorkspacePath) {
+    } else if (wsForMerge) {
       const { listMemories: listMemories3 } = await Promise.resolve().then(() => (init_memory(), memory_exports));
       const { mergeMemories: mergeMemories2 } = await Promise.resolve().then(() => (init_workspace_merge(), workspace_merge_exports));
-      const wsMemories = listMemories3(defaultWorkspacePath);
+      const wsMemories = listMemories3(wsForMerge);
       const projMemories = listMemories3(resolved);
       const merged = mergeMemories2(wsMemories, projMemories);
       if (merged.length === 0) {
@@ -37176,6 +37592,8 @@ server.tool(
     const sid = getOwnedSessionIdForLogging();
     const resolved = ppWithScope(project_path, scope);
     const result = saveMemoryTool(resolved, { type: type2, title, description, body, keywords, scope }, sid);
+    const { ensureOracleBootstrapped: ensureOracleBootstrapped2 } = await Promise.resolve().then(() => (init_oracle(), oracle_exports));
+    ensureOracleBootstrapped2(resolved);
     await embedKbEntry(resolved, result.slug, "memory", title, description, readConfig(resolved).contextMode);
     return { content: [{ type: "text", text: `Memory saved: ${result.slug} (${type2}) -> ${resolved}` }] };
   }
@@ -37194,6 +37612,8 @@ server.tool(
   async ({ project_path, title, decision, reasoning, enforce, scope }) => {
     const resolved = ppWithScope(project_path, scope);
     const result = saveDecisionTool(resolved, { title, decision, reasoning, enforce, scope });
+    const { ensureOracleBootstrapped: ensureOracleBootstrapped2 } = await Promise.resolve().then(() => (init_oracle(), oracle_exports));
+    ensureOracleBootstrapped2(resolved);
     await embedKbEntry(resolved, result.id, "decision", title, decision, readConfig(resolved).contextMode);
     return { content: [{ type: "text", text: `Decision saved: ${result.id} - ${title} -> ${resolved}` }] };
   }
@@ -37220,6 +37640,22 @@ server.tool(
   },
   async ({ project_path }) => {
     return { content: [{ type: "text", text: showSafetyTool(pp(project_path)) }] };
+  }
+);
+server.tool(
+  "axme_save_oracle",
+  "Write or append to one oracle section. Use during cooperative setup to populate stack / structure / patterns / glossary inline. Replaces by default; pass mode='append' to add to existing content.",
+  {
+    project_path: external_exports3.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
+    section: external_exports3.enum(["stack", "structure", "patterns", "glossary"]).describe("Which oracle section to write"),
+    content: external_exports3.string().describe("Markdown body for this section"),
+    mode: external_exports3.enum(["replace", "append"]).optional().describe("Default 'replace'. 'append' adds to existing content.")
+  },
+  async ({ project_path, section, content, mode }) => {
+    const { saveOracleSection: saveOracleSection2 } = await Promise.resolve().then(() => (init_oracle(), oracle_exports));
+    const resolved = pp(project_path);
+    saveOracleSection2(resolved, section, content, mode ?? "replace");
+    return { content: [{ type: "text", text: `Oracle ${section} ${mode === "append" ? "appended" : "saved"}.` }] };
   }
 );
 server.tool(
@@ -37456,7 +37892,7 @@ server.tool(
       "",
       "## Step 2: Prepare Everything for `axme_finalize_close`",
       "",
-      "Collect ALL data into a single `axme_finalize_close` call:",
+      "Collect ALL data into a single `axme_finalize_close` call.",
       "",
       "### Extractions (arrays, can be empty):",
       "- `memories`: [{action, type, title, description, body, keywords, scope}]",
@@ -37466,15 +37902,19 @@ server.tool(
       "- `safety_rules`: [{action, rule_type, value}]",
       "  - action: `add` | `remove`",
       "",
-      "### Handoff:",
-      "- `stopped_at`: what the session stopped at (single line)",
-      "- `summary`: 2-5 bullet points of what was accomplished",
-      "- `in_progress`: current state (branches, PRs, uncommitted work)",
+      "### Handoff \u2014 six REQUIRED string fields. ALL must be present and non-empty.",
+      "If a session legitimately has nothing to report for one of them, pass an explicit placeholder string (examples below) \u2014 do NOT omit the field. Omitting yields per-field 'Expected string, received undefined' errors from Zod.",
+      "",
+      '- **`stopped_at`** (REQUIRED, single line) \u2014 where the session stopped, e.g. `"finalized PR #207 review"`',
+      '- **`summary`** (REQUIRED) \u2014 2-5 bullet points of accomplishments. Empty placeholder: `"- (no items)"`',
+      '- **`in_progress`** (REQUIRED) \u2014 branches, PRs, uncommitted work. Empty placeholder: `"(nothing in progress)"`',
+      '- **`next_steps`** (REQUIRED) \u2014 concrete next steps. Empty placeholder: `"(none \u2014 work is complete)"`',
+      "- **`worklog_entry`** (REQUIRED) \u2014 5-15 line narrative markdown summary of the session",
+      "- **`startup_text`** (REQUIRED) \u2014 ready-to-paste startup text for the next session",
+      "",
+      "### Handoff \u2014 optional fields (omit if not applicable):",
       "- `prs`: [{url, title, status}]",
-      "- `test_results`, `blockers`, `dirty_branches` (optional)",
-      "- `next_steps`: concrete next steps",
-      "- `worklog_entry`: narrative summary (5-15 lines markdown)",
-      "- `startup_text`: ready-to-paste text for next session",
+      "- `test_results`, `blockers`, `dirty_branches`",
       "",
       "## Step 3: Call `axme_finalize_close`",
       "",
@@ -37516,20 +37956,26 @@ server.tool(
       value: external_exports3.string()
     })).optional().describe("Safety rules to add/remove"),
     // --- Handoff ---
-    stopped_at: external_exports3.string().describe("What the session stopped at (single line)"),
-    summary: external_exports3.string().describe("2-5 bullet points of what was accomplished. Use real newlines, NOT literal backslash-n. Each bullet on its own line starting with '- '."),
-    in_progress: external_exports3.string().describe("Current state: branches, PRs, uncommitted work. Use real newlines, NOT literal backslash-n."),
+    // All six strings below are REQUIRED. If a session legitimately has
+    // nothing to report for one, pass an explicit placeholder like
+    // "(nothing in progress)" — do NOT omit the field. Omitting yields a
+    // Zod "Expected string, received undefined" error per missing field,
+    // which has historically been mis-read by agents as a per-field server
+    // bug rather than a missing-argument error.
+    stopped_at: external_exports3.string().min(1, "stopped_at is REQUIRED \u2014 pass a single-line description of where the session stopped, e.g. 'finalized PR #207 review'.").describe("[REQUIRED] What the session stopped at (single line)"),
+    summary: external_exports3.string().min(1, "summary is REQUIRED \u2014 pass 2-5 bullet points of accomplishments separated by real newlines, or '- (no items)' if truly empty.").describe("[REQUIRED] 2-5 bullet points of what was accomplished. Use real newlines, NOT literal backslash-n. Each bullet on its own line starting with '- '."),
+    in_progress: external_exports3.string().min(1, "in_progress is REQUIRED \u2014 pass branches / PRs / uncommitted work, or '(nothing in progress)' if the working tree is clean. Do not omit the field.").describe("[REQUIRED] Current state: branches, PRs, uncommitted work. Use real newlines, NOT literal backslash-n. Pass '(nothing in progress)' if clean."),
     prs: external_exports3.array(external_exports3.object({
       url: external_exports3.string(),
       title: external_exports3.string(),
       status: external_exports3.string()
-    })).optional().describe("PRs created/merged in this session"),
-    test_results: external_exports3.string().optional().describe("Test run summary"),
-    blockers: external_exports3.string().optional().describe("Blockers for next session"),
-    next_steps: external_exports3.string().describe("Concrete next steps for next session. Use real newlines, NOT literal backslash-n."),
-    dirty_branches: external_exports3.string().optional().describe("Branch names with state"),
-    worklog_entry: external_exports3.string().describe("Narrative session summary (5-15 lines markdown). Use real newlines, NOT literal backslash-n."),
-    startup_text: external_exports3.string().describe("Ready-to-paste startup text for the next session")
+    })).optional().describe("[optional] PRs created/merged in this session"),
+    test_results: external_exports3.string().optional().describe("[optional] Test run summary"),
+    blockers: external_exports3.string().optional().describe("[optional] Blockers for next session"),
+    next_steps: external_exports3.string().min(1, "next_steps is REQUIRED \u2014 pass concrete next steps for the next session, or '(none \u2014 work is complete)' if there are none. Do not omit the field.").describe("[REQUIRED] Concrete next steps for next session. Use real newlines, NOT literal backslash-n. Pass '(none \u2014 work is complete)' if there are none."),
+    dirty_branches: external_exports3.string().optional().describe("[optional] Branch names with state"),
+    worklog_entry: external_exports3.string().min(1, "worklog_entry is REQUIRED \u2014 pass a 5-15 line narrative summary of the session in markdown. Do not omit the field.").describe("[REQUIRED] Narrative session summary (5-15 lines markdown). Use real newlines, NOT literal backslash-n."),
+    startup_text: external_exports3.string().min(1, "startup_text is REQUIRED \u2014 pass ready-to-paste text the user will hand to the next session. Do not omit the field.").describe("[REQUIRED] Ready-to-paste startup text for the next session")
   },
   async (args) => {
     const sid = getOwnedSessionIdForLogging();
