@@ -6900,7 +6900,7 @@ var AXME_CODE_VERSION, AXME_CODE_DIR, DEFAULT_MODEL, DEFAULT_AUDITOR_MODEL, DEFA
 var init_types = __esm({
   "src/types.ts"() {
     "use strict";
-    AXME_CODE_VERSION = true ? "0.6.0" : "0.0.0-dev";
+    AXME_CODE_VERSION = true ? "0.6.1" : "0.0.0-dev";
     AXME_CODE_DIR = ".axme-code";
     DEFAULT_MODEL = "claude-sonnet-4-6";
     DEFAULT_AUDITOR_MODEL = "claude-sonnet-4-6";
@@ -7344,7 +7344,17 @@ function saveDecisions(projectPath, decisions) {
   ensureDir(dir);
   const existing = listDecisions(projectPath);
   const deduped = deduplicateDecisions(decisions, existing);
+  const all = listDecisions(projectPath, { includeAll: true });
+  const used = new Set(all.map((d) => d.id));
+  const nums = all.map((d) => parseInt(d.id.replace("D-", ""), 10)).filter((n) => Number.isFinite(n));
+  let nextNum = nums.length > 0 ? Math.max(...nums) + 1 : 1;
   for (const d of deduped) {
+    if (used.has(d.id)) {
+      let candidate = `D-${String(nextNum++).padStart(3, "0")}`;
+      while (used.has(candidate)) candidate = `D-${String(nextNum++).padStart(3, "0")}`;
+      d.id = candidate;
+    }
+    used.add(d.id);
     atomicWrite(join4(dir, `${d.id}-${d.slug}.md`), formatDecisionFile(d));
   }
   rebuildIndex(projectPath);
@@ -12439,7 +12449,7 @@ __export(telemetry_exports, {
 import { homedir as homedir3 } from "node:os";
 import { join as join18 } from "node:path";
 import {
-  existsSync as existsSync7,
+  existsSync as existsSync8,
   readFileSync as readFileSync12,
   writeFileSync as writeFileSync3,
   mkdirSync as mkdirSync2,
@@ -12474,7 +12484,7 @@ function isCI() {
 function getOrCreateMid() {
   if (cachedMid) return { mid: cachedMid, isNew: false };
   const disabled = isTelemetryDisabled();
-  if (existsSync7(getMidFile())) {
+  if (existsSync8(getMidFile())) {
     try {
       const raw = readFileSync12(getMidFile(), "utf-8").trim();
       if (/^[0-9a-f]{64}$/.test(raw)) {
@@ -12501,7 +12511,7 @@ function getOrCreateMid() {
 }
 function readLastVersion() {
   try {
-    if (!existsSync7(getLastVersionFile())) return null;
+    if (!existsSync8(getLastVersionFile())) return null;
     return readFileSync12(getLastVersionFile(), "utf-8").trim() || null;
   } catch {
     return null;
@@ -12548,7 +12558,7 @@ async function postEvents(events) {
 }
 function readQueue() {
   try {
-    if (!existsSync7(getQueueFile())) return [];
+    if (!existsSync8(getQueueFile())) return [];
     const raw = readFileSync12(getQueueFile(), "utf-8");
     const lines = raw.split("\n").filter((l) => l.trim());
     const out = [];
@@ -12574,7 +12584,7 @@ function writeQueue(events) {
 function appendToQueue(event) {
   try {
     mkdirSync2(getStateDir(), { recursive: true });
-    if (existsSync7(getQueueFile())) {
+    if (existsSync8(getQueueFile())) {
       const existing = readQueue();
       if (existing.length >= QUEUE_MAX_EVENTS) {
         existing.push(event);
@@ -12706,7 +12716,7 @@ var init_telemetry = __esm({
 
 // src/server.ts
 import { join as join20 } from "node:path";
-import { existsSync as existsSync9 } from "node:fs";
+import { existsSync as existsSync10 } from "node:fs";
 
 // node_modules/zod/v3/helpers/util.js
 var util;
@@ -36630,9 +36640,9 @@ function getFullContextSections(projectPath, workspacePath) {
   if (!storageDirExists || !hasConfig) {
     const setupLock = join15(projectPath, AXME_CODE_DIR, "setup.lock");
     if (pathExists(setupLock)) {
-      return [parts[0] + "\n\nSetup is already running. Wait for it to finish, then call axme_context again."];
+      return [parts[0] + "\n\nSetup is already running (`.axme-code/setup.lock` is present). Wait for it to finish, then call axme_context again. If the user says no setup is running, the lock is a leftover from an interrupted setup \u2014 it self-expires 15 minutes after it was written, or the user can re-run setup with `--force`."];
     }
-    return [parts[0] + "\n\nProject not initialized \u2014 `.axme-code/` is missing in this workspace. **Do NOT run `axme-code setup` yourself.** Initialization is the user's job (Cursor: run `AXME: Setup` from Command Palette; Claude Code: run `axme-code setup` in terminal). Tell the user this and stop; once they finish setup, call `axme_context` again and the knowledge base will load."];
+    return [parts[0] + '\n\nProject not initialized \u2014 `.axme-code/` storage is missing (or has no config). Offer the user AXME setup; on consent, EXECUTE the inline setup flow from the server instructions (the "PROJECT SETUP REQUIRED" block: a sequence of axme_save_decision / axme_save_memory / axme_update_safety / axme_save_oracle tool calls \u2014 the first save call auto-bootstraps `.axme-code/`). Do NOT run `axme-code setup` via the Bash tool \u2014 on plugin installs the binary is not on PATH. The user can alternatively run the deeper LLM scan themselves: `AXME: Setup` from the Command Palette (Cursor extension) or `axme-code setup` in a terminal (CLI installs).'];
   }
   if (workspacePath && workspacePath !== projectPath) {
     const wsRules = loadSafetyRules(workspacePath);
@@ -36926,7 +36936,9 @@ init_types();
 import { join as join16 } from "node:path";
 function statusTool(projectPath) {
   const initialized = pathExists(join16(projectPath, AXME_CODE_DIR));
-  if (!initialized) return "Project not initialized. Run axme_init first.";
+  if (!initialized) {
+    return "Project not initialized. Run `axme-code setup` in a terminal (or `AXME: Setup` from the Cursor Command Palette), or follow the inline setup flow from axme_context.";
+  }
   const oracle = oracleExists(projectPath) ? "initialized" : "not initialized";
   const decisions = listDecisions(projectPath);
   const memories = listMemories(projectPath);
@@ -37075,17 +37087,27 @@ init_worklog();
 init_engine();
 init_types();
 import { spawn } from "node:child_process";
-import { openSync as openSync3, closeSync as closeSync3 } from "node:fs";
-import { join as join17 } from "node:path";
+import { openSync as openSync3, closeSync as closeSync3, existsSync as existsSync7 } from "node:fs";
+import { join as join17, basename as basename5, dirname as dirname4 } from "node:path";
 var AUDIT_WORKER_LOGS_DIR = "audit-worker-logs";
+function resolveCliEntry() {
+  const arg1 = process.argv[1];
+  if (!arg1) throw new Error("audit-spawner: cannot determine CLI path from process.argv[1]");
+  if (/^server\.(mjs|cjs|js)$/.test(basename5(arg1))) {
+    for (const candidate of ["cli.mjs", "cli.cjs", "cli.js"]) {
+      const sibling = join17(dirname4(arg1), candidate);
+      if (existsSync7(sibling)) return sibling;
+    }
+  }
+  return arg1;
+}
 function spawnDetachedAuditWorker(workspacePath, sessionId, ide) {
   const logsDir = join17(workspacePath, AXME_CODE_DIR, AUDIT_WORKER_LOGS_DIR);
   ensureDir(logsDir);
   const logPath = join17(logsDir, `${sessionId}.log`);
   const fd = openSync3(logPath, "a");
   try {
-    const cliPath = process.argv[1];
-    if (!cliPath) throw new Error("audit-spawner: cannot determine CLI path from process.argv[1]");
+    const cliPath = resolveCliEntry();
     const argv = [cliPath, "audit-session", "--workspace", workspacePath, "--session", sessionId];
     if (ide) argv.push("--ide", ide);
     const child = spawn(
@@ -37110,10 +37132,13 @@ function spawnDetachedAuditWorker(workspacePath, sessionId, ide) {
   }
 }
 
+// src/server.ts
+init_types();
+
 // src/auto-update.ts
 init_types();
 import { homedir as homedir4 } from "node:os";
-import { join as join19, resolve as resolve6, basename as basename5 } from "node:path";
+import { join as join19, resolve as resolve6, basename as basename6 } from "node:path";
 import {
   readFileSync as readFileSync13,
   writeFileSync as writeFileSync4,
@@ -37150,7 +37175,7 @@ function getBinaryPath() {
   const arg1 = process.argv[1];
   if (!arg1) return null;
   const resolved = resolve6(arg1);
-  const name = basename5(resolved);
+  const name = basename6(resolved);
   if (name === "axme-code" && !resolved.endsWith(".js") && !resolved.endsWith(".ts")) {
     return resolved;
   }
@@ -37171,7 +37196,7 @@ async function fetchLatestRelease() {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
-    const resp = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
+    const resp = await fetch(`https://api.github.com/repos/${REPO}/releases?per_page=30`, {
       headers: {
         Accept: "application/vnd.github+json",
         "User-Agent": `axme-code/${AXME_CODE_VERSION}`
@@ -37181,7 +37206,8 @@ async function fetchLatestRelease() {
     clearTimeout(timeout);
     if (!resp.ok) return null;
     const data = await resp.json();
-    const tag = data.tag_name;
+    const tag = data.map((r) => r.tag_name).find((t) => /^v[0-9]/.test(t));
+    if (!tag) return null;
     return { tag, version: tag.replace(/^v/, "") };
   } catch {
     return null;
@@ -37286,7 +37312,7 @@ function resolveServerRoot() {
   return process.cwd();
 }
 var serverCwd = resolveServerRoot();
-var serverHasGit = existsSync9(join20(serverCwd, ".git"));
+var serverHasGit = existsSync10(join20(serverCwd, ".git"));
 var serverWorkspace = detectWorkspace(serverCwd);
 var isWorkspace = serverHasGit ? false : serverWorkspace.type !== "single";
 var defaultProjectPath = serverCwd;
@@ -37386,10 +37412,10 @@ function buildInstructions() {
   } else {
     parts.push("Call axme_context at session start. It returns compact meta and instructions to call axme_oracle, axme_decisions, axme_memories in parallel.");
   }
-  const axmeDirExists = existsSync9(join20(defaultProjectPath, ".axme-code"));
+  const axmeDirExists = existsSync10(join20(defaultProjectPath, ".axme-code"));
   if (!axmeDirExists) {
     parts.push(
-      `PROJECT SETUP REQUIRED (HIGHEST PRIORITY): this project has no .axme-code/ directory. BEFORE doing anything else, tell the user in their language: "AXME is not set up for this project. Want me to do it now? I'll scan the repo and save architecture decisions, patterns and safety rules into .axme-code/ \u2014 runs inline on your Cursor subscription, no extra cost." If the user agrees (any affirmative in any language), EXECUTE setup. Important \u2014 setup is a sequence of MCP TOOL CALLS, not a plan to describe. Bullet-listing what you would save in prose is a FAILURE \u2014 call the tool instead. Required:
+      `PROJECT SETUP REQUIRED (HIGHEST PRIORITY): this project has no .axme-code/ directory. BEFORE doing anything else, tell the user in their language: "AXME is not set up for this project. Want me to do it now? I'll scan the repo and save architecture decisions, patterns and safety rules into .axme-code/ \u2014 runs inline on the subscription you already use for this chat, no extra API key or cost." If the user agrees (any affirmative in any language), EXECUTE setup. Important \u2014 setup is a sequence of MCP TOOL CALLS, not a plan to describe. Bullet-listing what you would save in prose is a FAILURE \u2014 call the tool instead. Required:
   1. Scan: read package.json/README/main configs + key source folders to understand stack, conventions, layout.
   2. EXECUTE at least 5 axme_save_decision calls (scope=["workspace"], with concrete rationale tied to evidence).
   3. EXECUTE at least 3 axme_save_memory calls (type="pattern", scope=["workspace"]) for gotchas / edge cases.
@@ -37419,7 +37445,10 @@ If you catch yourself writing "Save decision: X / Save memory: Y" as text, STOP 
   return parts.join(" ");
 }
 var server = new McpServer(
-  { name: "axme", version: "0.1.0" },
+  // Report the real release version: serverInfo previously hardcoded
+  // "0.1.0", which made "which version is my IDE actually running?"
+  // undebuggable from the client side.
+  { name: "axme", version: AXME_CODE_VERSION },
   { instructions: buildInstructions() }
 );
 var _origRegisterTool = server.tool.bind(server);

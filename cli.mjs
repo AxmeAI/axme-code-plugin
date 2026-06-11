@@ -2794,7 +2794,7 @@ var AXME_CODE_VERSION, AXME_CODE_DIR, DEFAULT_MODEL, DEFAULT_AUDITOR_MODEL, DEFA
 var init_types = __esm({
   "src/types.ts"() {
     "use strict";
-    AXME_CODE_VERSION = true ? "0.6.0" : "0.0.0-dev";
+    AXME_CODE_VERSION = true ? "0.6.1" : "0.0.0-dev";
     AXME_CODE_DIR = ".axme-code";
     DEFAULT_MODEL = "claude-sonnet-4-6";
     DEFAULT_AUDITOR_MODEL = "claude-sonnet-4-6";
@@ -3304,7 +3304,17 @@ function saveDecisions(projectPath, decisions) {
   ensureDir(dir);
   const existing = listDecisions(projectPath);
   const deduped = deduplicateDecisions(decisions, existing);
+  const all = listDecisions(projectPath, { includeAll: true });
+  const used = new Set(all.map((d) => d.id));
+  const nums = all.map((d) => parseInt(d.id.replace("D-", ""), 10)).filter((n) => Number.isFinite(n));
+  let nextNum = nums.length > 0 ? Math.max(...nums) + 1 : 1;
   for (const d of deduped) {
+    if (used.has(d.id)) {
+      let candidate = `D-${String(nextNum++).padStart(3, "0")}`;
+      while (used.has(candidate)) candidate = `D-${String(nextNum++).padStart(3, "0")}`;
+      d.id = candidate;
+    }
+    used.add(d.id);
     atomicWrite(join4(dir, `${d.id}-${d.slug}.md`), formatDecisionFile(d));
   }
   rebuildIndex(projectPath);
@@ -7136,7 +7146,9 @@ var init_workspace_detector = __esm({
 import { join as join17 } from "node:path";
 function statusTool(projectPath) {
   const initialized = pathExists(join17(projectPath, AXME_CODE_DIR));
-  if (!initialized) return "Project not initialized. Run axme_init first.";
+  if (!initialized) {
+    return "Project not initialized. Run `axme-code setup` in a terminal (or `AXME: Setup` from the Cursor Command Palette), or follow the inline setup flow from axme_context.";
+  }
   const oracle = oracleExists(projectPath) ? "initialized" : "not initialized";
   const decisions = listDecisions(projectPath);
   const memories = listMemories(projectPath);
@@ -7581,9 +7593,11 @@ import { dirname as dirname5, join as join19 } from "node:path";
 function readJsonOr(path, fallback) {
   if (!existsSync9(path)) return fallback;
   try {
-    return JSON.parse(readFileSync13(path, "utf-8"));
+    const raw = readFileSync13(path, "utf-8");
+    if (!raw.trim()) return fallback;
+    return JSON.parse(raw);
   } catch {
-    return fallback;
+    return null;
   }
 }
 function writeJsonAtomic(path, value) {
@@ -7591,15 +7605,25 @@ function writeJsonAtomic(path, value) {
   writeFileSync4(path, JSON.stringify(value, null, 2) + "\n", "utf-8");
 }
 function writeCursorMcpJson(projectPath) {
+  if (process.env.AXME_SETUP_FROM_EXTENSION) return;
   const path = join19(projectPath, ".cursor", "mcp.json");
   const cfg = readJsonOr(path, {});
+  if (cfg === null) {
+    console.error(`  ${path}: SKIPPED \u2014 existing file is not valid JSON. Fix or remove it, then re-run setup; refusing to overwrite user config.`);
+    return;
+  }
   if (!cfg.mcpServers) cfg.mcpServers = {};
   cfg.mcpServers.axme = { command: "axme-code", args: ["serve"] };
   writeJsonAtomic(path, cfg);
 }
 function writeCursorHooksJson(projectPath, buildHookCommand2) {
+  if (process.env.AXME_SETUP_FROM_EXTENSION) return;
   const path = join19(projectPath, ".cursor", "hooks.json");
   const cfg = readJsonOr(path, { version: 1 });
+  if (cfg === null) {
+    console.error(`  ${path}: SKIPPED \u2014 existing file is not valid JSON. Fix or remove it, then re-run setup; refusing to overwrite user config.`);
+    return;
+  }
   if (!cfg.version) cfg.version = 1;
   if (!cfg.hooks) cfg.hooks = {};
   const hookKinds = ["preToolUse", "postToolUse", "sessionEnd"];
@@ -7692,7 +7716,7 @@ __export(embeddings_exports, {
   upsertEmbedding: () => upsertEmbedding
 });
 import { createRequire } from "node:module";
-import { existsSync as existsSync10, statSync as statSync5 } from "node:fs";
+import { existsSync as existsSync10, statSync as statSync6 } from "node:fs";
 import { homedir as homedir6 } from "node:os";
 import { join as join20 } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -7774,7 +7798,7 @@ function saveEmbeddings(projectPath, records) {
 }
 function isStale(record3, mdPath) {
   if (!existsSync10(mdPath)) return true;
-  return statSync5(mdPath).mtimeMs > record3.mtime;
+  return statSync6(mdPath).mtimeMs > record3.mtime;
 }
 function topK(records, qvec, k, type2) {
   const filtered = type2 ? records.filter((r) => r.type === type2) : records;
@@ -39590,9 +39614,9 @@ function getFullContextSections(projectPath, workspacePath) {
   if (!storageDirExists || !hasConfig) {
     const setupLock = join24(projectPath, AXME_CODE_DIR, "setup.lock");
     if (pathExists(setupLock)) {
-      return [parts[0] + "\n\nSetup is already running. Wait for it to finish, then call axme_context again."];
+      return [parts[0] + "\n\nSetup is already running (`.axme-code/setup.lock` is present). Wait for it to finish, then call axme_context again. If the user says no setup is running, the lock is a leftover from an interrupted setup \u2014 it self-expires 15 minutes after it was written, or the user can re-run setup with `--force`."];
     }
-    return [parts[0] + "\n\nProject not initialized \u2014 `.axme-code/` is missing in this workspace. **Do NOT run `axme-code setup` yourself.** Initialization is the user's job (Cursor: run `AXME: Setup` from Command Palette; Claude Code: run `axme-code setup` in terminal). Tell the user this and stop; once they finish setup, call `axme_context` again and the knowledge base will load."];
+    return [parts[0] + '\n\nProject not initialized \u2014 `.axme-code/` storage is missing (or has no config). Offer the user AXME setup; on consent, EXECUTE the inline setup flow from the server instructions (the "PROJECT SETUP REQUIRED" block: a sequence of axme_save_decision / axme_save_memory / axme_update_safety / axme_save_oracle tool calls \u2014 the first save call auto-bootstraps `.axme-code/`). Do NOT run `axme-code setup` via the Bash tool \u2014 on plugin installs the binary is not on PATH. The user can alternatively run the deeper LLM scan themselves: `AXME: Setup` from the Command Palette (Cursor extension) or `axme-code setup` in a terminal (CLI installs).'];
   }
   if (workspacePath && workspacePath !== projectPath) {
     const wsRules = loadSafetyRules(workspacePath);
@@ -40207,16 +40231,26 @@ var init_kb_search = __esm({
 
 // src/audit-spawner.ts
 import { spawn } from "node:child_process";
-import { openSync as openSync3, closeSync as closeSync3 } from "node:fs";
-import { join as join25 } from "node:path";
+import { openSync as openSync3, closeSync as closeSync3, existsSync as existsSync13 } from "node:fs";
+import { join as join25, basename as basename6, dirname as dirname7 } from "node:path";
+function resolveCliEntry() {
+  const arg1 = process.argv[1];
+  if (!arg1) throw new Error("audit-spawner: cannot determine CLI path from process.argv[1]");
+  if (/^server\.(mjs|cjs|js)$/.test(basename6(arg1))) {
+    for (const candidate of ["cli.mjs", "cli.cjs", "cli.js"]) {
+      const sibling = join25(dirname7(arg1), candidate);
+      if (existsSync13(sibling)) return sibling;
+    }
+  }
+  return arg1;
+}
 function spawnDetachedAuditWorker(workspacePath, sessionId, ide) {
   const logsDir = join25(workspacePath, AXME_CODE_DIR, AUDIT_WORKER_LOGS_DIR);
   ensureDir(logsDir);
   const logPath = join25(logsDir, `${sessionId}.log`);
   const fd = openSync3(logPath, "a");
   try {
-    const cliPath = process.argv[1];
-    if (!cliPath) throw new Error("audit-spawner: cannot determine CLI path from process.argv[1]");
+    const cliPath = resolveCliEntry();
     const argv = [cliPath, "audit-session", "--workspace", workspacePath, "--session", sessionId];
     if (ide) argv.push("--ide", ide);
     const child = spawn(
@@ -40252,7 +40286,7 @@ var init_audit_spawner = __esm({
 
 // src/auto-update.ts
 import { homedir as homedir7 } from "node:os";
-import { join as join26, resolve as resolve6, basename as basename6 } from "node:path";
+import { join as join26, resolve as resolve6, basename as basename7 } from "node:path";
 import {
   readFileSync as readFileSync15,
   writeFileSync as writeFileSync6,
@@ -40282,7 +40316,7 @@ function getBinaryPath() {
   const arg1 = process.argv[1];
   if (!arg1) return null;
   const resolved = resolve6(arg1);
-  const name = basename6(resolved);
+  const name = basename7(resolved);
   if (name === "axme-code" && !resolved.endsWith(".js") && !resolved.endsWith(".ts")) {
     return resolved;
   }
@@ -40303,7 +40337,7 @@ async function fetchLatestRelease() {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
-    const resp = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
+    const resp = await fetch(`https://api.github.com/repos/${REPO}/releases?per_page=30`, {
       headers: {
         Accept: "application/vnd.github+json",
         "User-Agent": `axme-code/${AXME_CODE_VERSION}`
@@ -40313,7 +40347,8 @@ async function fetchLatestRelease() {
     clearTimeout(timeout);
     if (!resp.ok) return null;
     const data = await resp.json();
-    const tag = data.tag_name;
+    const tag = data.map((r) => r.tag_name).find((t) => /^v[0-9]/.test(t));
+    if (!tag) return null;
     return { tag, version: tag.replace(/^v/, "") };
   } catch {
     return null;
@@ -40425,7 +40460,7 @@ var init_auto_update = __esm({
 // src/server.ts
 var server_exports = {};
 import { join as join27 } from "node:path";
-import { existsSync as existsSync14 } from "node:fs";
+import { existsSync as existsSync15 } from "node:fs";
 function resolveServerRoot() {
   const argv = process.argv;
   const flagIdx = argv.indexOf("--workspace");
@@ -40520,10 +40555,10 @@ function buildInstructions() {
   } else {
     parts.push("Call axme_context at session start. It returns compact meta and instructions to call axme_oracle, axme_decisions, axme_memories in parallel.");
   }
-  const axmeDirExists = existsSync14(join27(defaultProjectPath, ".axme-code"));
+  const axmeDirExists = existsSync15(join27(defaultProjectPath, ".axme-code"));
   if (!axmeDirExists) {
     parts.push(
-      `PROJECT SETUP REQUIRED (HIGHEST PRIORITY): this project has no .axme-code/ directory. BEFORE doing anything else, tell the user in their language: "AXME is not set up for this project. Want me to do it now? I'll scan the repo and save architecture decisions, patterns and safety rules into .axme-code/ \u2014 runs inline on your Cursor subscription, no extra cost." If the user agrees (any affirmative in any language), EXECUTE setup. Important \u2014 setup is a sequence of MCP TOOL CALLS, not a plan to describe. Bullet-listing what you would save in prose is a FAILURE \u2014 call the tool instead. Required:
+      `PROJECT SETUP REQUIRED (HIGHEST PRIORITY): this project has no .axme-code/ directory. BEFORE doing anything else, tell the user in their language: "AXME is not set up for this project. Want me to do it now? I'll scan the repo and save architecture decisions, patterns and safety rules into .axme-code/ \u2014 runs inline on the subscription you already use for this chat, no extra API key or cost." If the user agrees (any affirmative in any language), EXECUTE setup. Important \u2014 setup is a sequence of MCP TOOL CALLS, not a plan to describe. Bullet-listing what you would save in prose is a FAILURE \u2014 call the tool instead. Required:
   1. Scan: read package.json/README/main configs + key source folders to understand stack, conventions, layout.
   2. EXECUTE at least 5 axme_save_decision calls (scope=["workspace"], with concrete rationale tied to evidence).
   3. EXECUTE at least 3 axme_save_memory calls (type="pattern", scope=["workspace"]) for gotchas / edge cases.
@@ -40639,10 +40674,11 @@ var init_server3 = __esm({
     init_sessions();
     init_worklog();
     init_audit_spawner();
+    init_types();
     init_auto_update();
     init_telemetry();
     serverCwd = resolveServerRoot();
-    serverHasGit = existsSync14(join27(serverCwd, ".git"));
+    serverHasGit = existsSync15(join27(serverCwd, ".git"));
     serverWorkspace = detectWorkspace(serverCwd);
     isWorkspace = serverHasGit ? false : serverWorkspace.type !== "single";
     defaultProjectPath = serverCwd;
@@ -40656,7 +40692,10 @@ var init_server3 = __esm({
     void sendStartupEvents();
     cleanupRunning = false;
     server = new McpServer(
-      { name: "axme", version: "0.1.0" },
+      // Report the real release version: serverInfo previously hardcoded
+      // "0.1.0", which made "which version is my IDE actually running?"
+      // undebuggable from the client side.
+      { name: "axme", version: AXME_CODE_VERSION },
       { instructions: buildInstructions() }
     );
     _origRegisterTool = server.tool.bind(server);
@@ -41488,7 +41527,7 @@ var self_test_exports = {};
 __export(self_test_exports, {
   runSelfTest: () => runSelfTest
 });
-import { mkdtempSync, rmSync as rmSync2, existsSync as existsSync15, readFileSync as readFileSync16 } from "node:fs";
+import { mkdtempSync, rmSync as rmSync2, existsSync as existsSync16, readFileSync as readFileSync16 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as join28 } from "node:path";
 import { spawn as spawn2 } from "node:child_process";
@@ -41504,7 +41543,7 @@ async function checkStorageWrite() {
     const { atomicWrite: atomicWrite2 } = await Promise.resolve().then(() => (init_engine(), engine_exports));
     const target = join28(tmpDir, ".axme-code", "memory", "patterns", "selftest.md");
     atomicWrite2(target, "selftest content\n");
-    if (!existsSync15(target)) {
+    if (!existsSync16(target)) {
       record2("storage write", false, "atomicWrite returned but file missing");
       return;
     }
@@ -41619,7 +41658,7 @@ async function runSelfTest() {
   await checkStorageWrite();
   await checkHookParseAndDeny();
   const selfPath = process.argv[1];
-  if (selfPath && existsSync15(selfPath)) {
+  if (selfPath && existsSync16(selfPath)) {
     await checkMcpServerBoot(selfPath);
   } else {
     record2("MCP server boot", false, "cannot locate own binary at process.argv[1]");
@@ -41652,8 +41691,8 @@ var pre_tool_use_exports = {};
 __export(pre_tool_use_exports, {
   runPreToolUseHook: () => runPreToolUseHook
 });
-import { dirname as dirname7, join as join29, resolve as resolve7 } from "node:path";
-import { existsSync as existsSync16 } from "node:fs";
+import { dirname as dirname8, join as join29, resolve as resolve7 } from "node:path";
+import { existsSync as existsSync17 } from "node:fs";
 function adaptersFor(ide) {
   if (ide === "cursor") return { input: cursorInputAdapter, output: cursorOutputAdapter };
   return { input: claudeCodeInputAdapter, output: claudeCodeOutputAdapter };
@@ -41711,17 +41750,17 @@ function deny(reason, output) {
 function findContainingRepo(filePath, workspaceRoot) {
   let dir = resolve7(filePath);
   try {
-    const stat = existsSync16(dir);
+    const stat = existsSync17(dir);
     if (!stat) {
-      dir = dirname7(dir);
+      dir = dirname8(dir);
     }
   } catch {
-    dir = dirname7(dir);
+    dir = dirname8(dir);
   }
   const rootResolved = resolve7(workspaceRoot);
   while (dir.startsWith(rootResolved) && dir !== rootResolved) {
-    if (existsSync16(join29(dir, ".git"))) return dir;
-    const parent = dirname7(dir);
+    if (existsSync17(join29(dir, ".git"))) return dir;
+    const parent = dirname8(dir);
     if (parent === dir) break;
     dir = parent;
   }
@@ -41900,15 +41939,15 @@ var init_post_tool_use = __esm({
 });
 
 // src/utils/auditor-mode.ts
-import { existsSync as existsSync17, readFileSync as readFileSync17, writeFileSync as writeFileSync8, mkdirSync as mkdirSync6, chmodSync as chmodSync4 } from "node:fs";
+import { existsSync as existsSync18, readFileSync as readFileSync17, writeFileSync as writeFileSync8, mkdirSync as mkdirSync6, chmodSync as chmodSync4 } from "node:fs";
 import { homedir as homedir8 } from "node:os";
-import { dirname as dirname8, join as join31 } from "node:path";
+import { dirname as dirname9, join as join31 } from "node:path";
 function auditorModePath() {
   return join31(homedir8(), ".config", "axme-code", "auditor-mode");
 }
 function loadAuditorMode() {
   const p = auditorModePath();
-  if (!existsSync17(p)) return "background";
+  if (!existsSync18(p)) return "background";
   try {
     const raw = readFileSync17(p, "utf-8").trim();
     return VALID.includes(raw) ? raw : "background";
@@ -41995,7 +42034,7 @@ var init_session_end = __esm({
 });
 
 // src/transcript-parser.ts
-import { readFileSync as readFileSync18, existsSync as existsSync18 } from "node:fs";
+import { readFileSync as readFileSync18, existsSync as existsSync19 } from "node:fs";
 function shortenToolInput(name, input) {
   if (!input || typeof input !== "object") return "";
   switch (name) {
@@ -42032,7 +42071,7 @@ function shortenToolInput(name, input) {
   }
 }
 function parseTranscriptFromOffset(path, startOffset = 0, ide = "claude-code") {
-  if (!existsSync18(path)) {
+  if (!existsSync19(path)) {
     return { turns: [], endOffset: startOffset, bytesRead: 0, fileSize: 0, bashCommands: [] };
   }
   let buffer;
@@ -42318,10 +42357,10 @@ __export(session_auditor_exports, {
   parseAuditOutput: () => parseAuditOutput,
   runSessionAudit: () => runSessionAudit
 });
-import { basename as basename7, isAbsolute, join as join33 } from "node:path";
+import { basename as basename8, isAbsolute, join as join33 } from "node:path";
 function buildExistingContext(sessionOrigin, workspaceInfo) {
   const paths = [
-    { label: workspaceInfo && workspaceInfo.root === sessionOrigin ? "workspace" : basename7(sessionOrigin), path: sessionOrigin }
+    { label: workspaceInfo && workspaceInfo.root === sessionOrigin ? "workspace" : basename8(sessionOrigin), path: sessionOrigin }
   ];
   if (workspaceInfo && workspaceInfo.type !== "single") {
     const seen = /* @__PURE__ */ new Set([sessionOrigin]);
@@ -42355,7 +42394,7 @@ function buildWorkspaceContext(sessionOrigin, filesChanged, workspaceInfo) {
   if (!workspaceInfo || workspaceInfo.type === "single") {
     lines.push(`- Session origin: ${sessionOrigin}`);
     lines.push(`- Type: single-repo session (not a workspace)`);
-    lines.push(`- Scope choices available: "${basename7(sessionOrigin)}" or "all"`);
+    lines.push(`- Scope choices available: "${basename8(sessionOrigin)}" or "all"`);
     lines.push("");
     lines.push('Because this is a single repo, use "all" for universal rules, or the repo name for repo-specific rules.');
     return lines.join("\n");
@@ -43900,7 +43939,7 @@ __export(cleanup_exports, {
   normalizeDecisions: () => normalizeDecisions
 });
 import { readdirSync as readdirSync11, readFileSync as readFileSync19, writeFileSync as writeFileSync9, mkdirSync as mkdirSync7, copyFileSync, rmSync as rmSync3 } from "node:fs";
-import { join as join36, basename as basename8 } from "node:path";
+import { join as join36, basename as basename9 } from "node:path";
 function cleanupLegacyArtifacts(projectPath, opts) {
   const log = opts.onProgress ?? (() => {
   });
@@ -43971,7 +44010,7 @@ function cleanupLegacyArtifacts(projectPath, opts) {
   ];
   for (const p of legacyPaths) {
     if (!pathExists(p)) continue;
-    const name = basename8(p) ?? p;
+    const name = basename9(p) ?? p;
     if (opts.dryRun) {
       log(`  [dry-run] would remove legacy ${name}`);
     } else {
@@ -44001,7 +44040,7 @@ function normalizeDecisions(workspacePath, opts) {
   }
   for (const decDir of targets) {
     locations++;
-    const name = `${basename8(join36(decDir, "..", ".."))}/${AXME_CODE_DIR}`;
+    const name = `${basename9(join36(decDir, "..", ".."))}/${AXME_CODE_DIR}`;
     let updated = 0;
     try {
       for (const file2 of readdirSync11(decDir).filter((f) => f.startsWith("D-") && f.endsWith(".md"))) {
@@ -44216,8 +44255,8 @@ Report summary: which repos had changes, how many decisions superseded/revoked/c
 
 // src/cli.ts
 init_js_yaml();
-import { resolve as resolve8, join as join37, basename as basename9 } from "node:path";
-import { writeFileSync as writeFileSync10, existsSync as existsSync19, readFileSync as readFileSync20, appendFileSync as appendFileSync4, mkdirSync as mkdirSync8 } from "node:fs";
+import { resolve as resolve8, join as join37, basename as basename10 } from "node:path";
+import { writeFileSync as writeFileSync10, existsSync as existsSync20, readFileSync as readFileSync20, appendFileSync as appendFileSync4, mkdirSync as mkdirSync8 } from "node:fs";
 
 // src/tools/init.ts
 init_engine();
@@ -44228,7 +44267,7 @@ init_safety();
 init_config();
 init_sessions();
 import { join as join16, basename as basename5 } from "node:path";
-import { existsSync as existsSync7 } from "node:fs";
+import { existsSync as existsSync7, statSync as statSync5 } from "node:fs";
 
 // src/storage/deploy.ts
 init_engine();
@@ -44481,23 +44520,43 @@ async function initProjectWithLLM(projectPath, opts) {
   }
   ensureDir(axmeDir);
   const lockPath = join16(axmeDir, "setup.lock");
-  if (pathExists(lockPath)) {
-    return {
-      projectPath,
-      created: false,
-      oracle: { files: 0, llm: false },
-      decisions: { count: 0, fromScan: 0, fromPresets: 0 },
-      memories: { count: 0, fromPresets: 0 },
-      safety: { created: false, llm: false, summary: "setup already running" },
-      config: false,
-      cost: zeroCost(),
-      durationMs: 0,
-      errors: ["Setup already in progress"],
-      scannersRun: 0,
-      scannersFailed: 0
-    };
+  const LOCK_STALE_MS2 = 15 * 60 * 1e3;
+  if (pathExists(lockPath) && !opts?.force) {
+    let stale = true;
+    try {
+      stale = Date.now() - statSync5(lockPath).mtimeMs >= LOCK_STALE_MS2;
+    } catch {
+      stale = true;
+    }
+    if (!stale) {
+      return {
+        projectPath,
+        created: false,
+        lockSkipped: true,
+        oracle: { files: 0, llm: false },
+        decisions: { count: 0, fromScan: 0, fromPresets: 0 },
+        memories: { count: 0, fromPresets: 0 },
+        safety: { created: false, llm: false, summary: "setup already running" },
+        config: false,
+        cost: zeroCost(),
+        durationMs: 0,
+        errors: ["Setup already in progress"],
+        scannersRun: 0,
+        scannersFailed: 0
+      };
+    }
   }
   atomicWrite(lockPath, (/* @__PURE__ */ new Date()).toISOString());
+  try {
+    return await runInitScanLocked(projectPath, opts, startTime, alreadyExists);
+  } finally {
+    try {
+      removeFile(lockPath);
+    } catch {
+    }
+  }
+}
+async function runInitScanLocked(projectPath, opts, startTime, alreadyExists) {
   const presets = opts?.presets ?? DEFAULT_PROJECT_CONFIG.presets;
   let totalCost = zeroCost();
   const errors = [];
@@ -44647,10 +44706,6 @@ ${err.stack.split("\n").slice(0, 3).join("\n")}` : "";
     oracleFiles = 4;
   } else if (oracleExists(projectPath) && !oracleLlm) {
     oracleFiles = 4;
-  }
-  try {
-    removeFile(lockPath);
-  } catch {
   }
   return {
     projectPath,
@@ -44858,7 +44913,7 @@ axme_update_safety, axme_safety, axme_status, axme_worklog, axme_workspace
 function generateClaudeMd(projectPath, isWorkspace2) {
   const claudeMdPath = join37(projectPath, "CLAUDE.md");
   const section = isWorkspace2 ? WORKSPACE_CLAUDE_MD : SINGLE_REPO_CLAUDE_MD;
-  if (existsSync19(claudeMdPath)) {
+  if (existsSync20(claudeMdPath)) {
     const content = readFileSync20(claudeMdPath, "utf-8");
     if (content.includes("## AXME Code")) {
       const sectionStart = content.indexOf("## AXME Code");
@@ -44921,7 +44976,7 @@ async function ensureAuthConfiguredForSetup() {
 }
 function generateWorkspaceYaml(workspacePath, ws) {
   const wsYaml = jsYaml.dump({
-    name: basename9(workspacePath),
+    name: basename10(workspacePath),
     type: ws.type,
     manifest: ws.manifestPath,
     projects: ws.projects
@@ -44940,11 +44995,17 @@ function configureHooks(projectPath) {
   const claudeDir = join37(projectPath, ".claude");
   const settingsPath = join37(claudeDir, "settings.json");
   let settings = {};
-  if (existsSync19(settingsPath)) {
-    try {
-      settings = JSON.parse(readFileSync20(settingsPath, "utf-8"));
-    } catch {
-      settings = {};
+  if (existsSync20(settingsPath)) {
+    const raw = readFileSync20(settingsPath, "utf-8");
+    if (raw.trim()) {
+      try {
+        settings = JSON.parse(raw);
+      } catch (err) {
+        console.error(`  .claude/settings.json: SKIPPED \u2014 existing file is not valid JSON (${err.message}).`);
+        console.error(`  Refusing to overwrite it (that would destroy your permissions/env/hooks).`);
+        console.error(`  Fix or remove ${settingsPath}, then re-run setup to install AXME hooks.`);
+        return;
+      }
     }
   }
   for (const hookType of ["PreToolUse", "PostToolUse", "SessionEnd"]) {
@@ -44982,7 +45043,7 @@ function configureHooks(projectPath) {
   });
   mkdirSync8(claudeDir, { recursive: true });
   writeFileSync10(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
-  console.log("  .claude/settings.json: hooks configured (PostToolUse + SessionEnd)");
+  console.log("  .claude/settings.json: hooks configured (PreToolUse + PostToolUse + SessionEnd)");
 }
 function writeBootstrapToAxmeMemory(projectPath, isWorkspace2, repoCount) {
   const title = isWorkspace2 ? "AXME Code storage initialized for workspace" : "AXME Code storage initialized";
@@ -45059,7 +45120,7 @@ async function main2() {
         process.exit(1);
       }
       const setupArgs = [];
-      for (let i = 0; i < args.length; i++) {
+      for (let i = 1; i < args.length; i++) {
         const a = args[i];
         if (a === "--force" || a === "--plugin") continue;
         if (a === "--ide") {
@@ -45067,13 +45128,31 @@ async function main2() {
           continue;
         }
         if (a.startsWith("--ide=")) continue;
+        if (a === "--help" || a === "-h") {
+          usage();
+          process.exit(0);
+        }
+        if (a.startsWith("-")) {
+          console.error(`Error: unknown flag for setup: ${a}`);
+          console.error("Usage: axme-code setup [path] [--force] [--plugin] [--ide=<claude-code|cursor>]");
+          process.exit(2);
+        }
         setupArgs.push(a);
       }
-      const projectPath = resolve8(setupArgs[1] || ".");
-      const hasGitDir = existsSync19(join37(projectPath, ".git"));
+      if (setupArgs.length > 1) {
+        console.error(`Error: setup takes at most one path argument, got: ${setupArgs.join(" ")}`);
+        process.exit(2);
+      }
+      const projectPath = resolve8(setupArgs[0] || ".");
+      if (setupArgs[0] && !existsSync20(projectPath)) {
+        console.error(`Error: path does not exist: ${projectPath}`);
+        console.error("setup scans an existing project \u2014 check the path for typos.");
+        process.exit(2);
+      }
+      const hasGitDir = existsSync20(join37(projectPath, ".git"));
       const ws = detectWorkspace(projectPath);
       const isWorkspace2 = hasGitDir ? false : ws.type !== "single";
-      const childRepos = isWorkspace2 ? ws.projects.filter((p) => existsSync19(join37(projectPath, p.path, ".git"))).length : 0;
+      const childRepos = isWorkspace2 ? ws.projects.filter((p) => existsSync20(join37(projectPath, p.path, ".git"))).length : 0;
       let setupOutcome = "failed";
       let setupMethod = "deterministic";
       let setupPhaseFailed = null;
@@ -45126,7 +45205,7 @@ Error: No Claude authentication found.
           const totalCost = workspaceResult.cost.costUsd + projectResults.reduce((s, r) => s + r.cost.costUsd, 0);
           console.log(`  Workspace: ${workspaceResult.decisions.count} decisions, ${workspaceResult.memories.count} memories`);
           for (const r of projectResults) {
-            const name = basename9(r.projectPath);
+            const name = basename10(r.projectPath);
             console.log(`  ${name}: ${r.decisions.count} decisions (${r.decisions.fromScan} LLM + ${r.decisions.fromPresets} presets)`);
           }
           if (totalCost > 0) console.log(`  Total cost: $${totalCost.toFixed(2)}`);
@@ -45141,6 +45220,15 @@ Error: No Claude authentication found.
           setupScannersFailed = workspaceResult.scannersFailed + projectResults.reduce((s, r) => s + r.scannersFailed, 0);
         } else {
           const result = await initProjectWithLLM(projectPath, { onProgress: console.log, force: forceSetup });
+          if (result.lockSkipped) {
+            console.error(`  Setup is already running in another process (fresh setup.lock found).`);
+            console.error(`  Wait for it to finish, or \u2014 if nothing is actually running \u2014 re-run with --force`);
+            console.error(`  (the lock also self-expires 15 minutes after the crashed setup wrote it).`);
+            setupOutcome = "failed";
+            setupPhaseFailed = "setup_lock";
+            await sendSetupTelemetry();
+            process.exit(1);
+          }
           if (!result.created && result.durationMs === 0) {
             console.log(`  Already initialized (skipped LLM scan). Use --force to re-scan.`);
             console.log(`  Decisions: ${result.decisions.count}, Memories: ${result.memories.count}`);
@@ -45178,21 +45266,27 @@ Error: No Claude authentication found.
             mcpPaths.push(join37(projectPath, p.path));
           }
         }
+        let mcpWritten = 0;
         for (const dir of mcpPaths) {
           const mcpPath = join37(dir, ".mcp.json");
           let mcpConfig = {};
-          if (existsSync19(mcpPath)) {
-            try {
-              mcpConfig = JSON.parse(readFileSync20(mcpPath, "utf-8"));
-            } catch {
-              mcpConfig = {};
+          if (existsSync20(mcpPath)) {
+            const raw = readFileSync20(mcpPath, "utf-8");
+            if (raw.trim()) {
+              try {
+                mcpConfig = JSON.parse(raw);
+              } catch (err) {
+                console.error(`  ${mcpPath}: SKIPPED \u2014 not valid JSON (${err.message}). Fix or remove the file, then re-run setup.`);
+                continue;
+              }
             }
           }
           if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {};
           mcpConfig.mcpServers.axme = mcpEntry;
           writeFileSync10(mcpPath, JSON.stringify(mcpConfig, null, 2) + "\n", "utf-8");
+          mcpWritten++;
         }
-        console.log(`  .mcp.json: updated (${mcpPaths.length} locations)`);
+        console.log(`  .mcp.json: updated (${mcpWritten}/${mcpPaths.length} locations)`);
       } else {
         console.log(`  .mcp.json: skipped (plugin provides MCP server)`);
       }
@@ -45217,7 +45311,7 @@ Error: No Claude authentication found.
         }
       }
       const gitignorePath = join37(projectPath, ".gitignore");
-      if (existsSync19(gitignorePath)) {
+      if (existsSync20(gitignorePath)) {
         const content = readFileSync20(gitignorePath, "utf-8");
         if (!content.includes(".axme-code")) {
           writeFileSync10(gitignorePath, content.trimEnd() + "\n.axme-code/\n", "utf-8");
@@ -45227,7 +45321,7 @@ Error: No Claude authentication found.
         writeFileSync10(gitignorePath, ".axme-code/\n", "utf-8");
         console.log("  .gitignore: created with .axme-code/");
       }
-      const repoCount = isWorkspace2 ? ws.projects.filter((p) => existsSync19(join37(projectPath, p.path, ".git"))).length : 0;
+      const repoCount = isWorkspace2 ? ws.projects.filter((p) => existsSync20(join37(projectPath, p.path, ".git"))).length : 0;
       writeBootstrapToAxmeMemory(projectPath, isWorkspace2, repoCount);
       setupOutcome = setupMethod === "llm" ? "success" : "fallback";
       await sendSetupTelemetry();
@@ -45291,7 +45385,7 @@ Error: No Claude authentication found.
       if (process.env.CLAUDE_PLUGIN_ROOT) {
         const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
         const sdkDir = join37(pluginRoot, "node_modules", "@anthropic-ai", "claude-agent-sdk");
-        if (!existsSync19(sdkDir)) {
+        if (!existsSync20(sdkDir)) {
           try {
             const { execSync: execSync3 } = await import("node:child_process");
             execSync3("npm install --omit=dev --ignore-scripts", {
@@ -45309,10 +45403,14 @@ Error: No Claude authentication found.
 
 ### Session Start (MANDATORY)
 Call axme_context at the start of every session.
-If it returns "not initialized", run \`axme-code setup --plugin\` via Bash tool immediately.
+If it returns "not initialized": offer the user AXME setup, and on consent
+EXECUTE the inline setup flow from axme_context / the server instructions
+(a sequence of axme_save_decision / axme_save_memory / axme_update_safety /
+axme_save_oracle tool calls). Do NOT try to run \`axme-code\` via the Bash
+tool \u2014 on plugin installs it is not on PATH.
 Do NOT skip \u2014 without context you will miss critical project rules.
 `;
-      if (existsSync19(claudeMdPath)) {
+      if (existsSync20(claudeMdPath)) {
         const content = readFileSync20(claudeMdPath, "utf-8");
         if (!content.includes("## AXME Code")) {
           writeFileSync10(claudeMdPath, content.trimEnd() + "\n\n" + axmeSection, "utf-8");
@@ -45324,7 +45422,7 @@ Do NOT skip \u2014 without context you will miss critical project rules.
       if (configExists2(checkPath)) {
         console.log(`[AXME Code] Knowledge base ready. Call axme_context now.`);
       } else {
-        console.log(`[AXME Code] Project not initialized. Run: axme-code setup --plugin`);
+        console.log(`[AXME Code] Project not initialized. Call axme_context and follow its inline setup flow (offer the user setup first).`);
       }
       break;
     }
