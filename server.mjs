@@ -6900,7 +6900,7 @@ var AXME_CODE_VERSION, AXME_CODE_DIR, DEFAULT_MODEL, DEFAULT_AUDITOR_MODEL, DEFA
 var init_types = __esm({
   "src/types.ts"() {
     "use strict";
-    AXME_CODE_VERSION = true ? "0.6.1" : "0.0.0-dev";
+    AXME_CODE_VERSION = true ? "0.6.2" : "0.0.0-dev";
     AXME_CODE_DIR = ".axme-code";
     DEFAULT_MODEL = "claude-sonnet-4-6";
     DEFAULT_AUDITOR_MODEL = "claude-sonnet-4-6";
@@ -11474,6 +11474,7 @@ __export(sessions_exports, {
   findOrphanSessions: () => findOrphanSessions,
   getClaudeCodePid: () => getClaudeCodePid,
   getLastSession: () => getLastSession,
+  getOwnAncestorPids: () => getOwnAncestorPids,
   initSessionStore: () => initSessionStore,
   isPidAlive: () => isPidAlive,
   isRetryableError: () => isRetryableError,
@@ -11498,22 +11499,68 @@ __export(sessions_exports, {
 });
 import { join as join11, resolve as resolve4 } from "node:path";
 import { readdirSync as readdirSync7, readFileSync as readFileSync9, rmSync, openSync as openSync2, closeSync as closeSync2, unlinkSync as unlinkSync3, statSync as statSync4 } from "node:fs";
+import { execSync as execSync2 } from "node:child_process";
 import { randomUUID as randomUUID3 } from "node:crypto";
 function isRetryableError(errMsg) {
   return RETRYABLE_ERROR_PATTERNS.some((p) => p.test(errMsg));
 }
 function getClaudeCodePid() {
+  const parent = readParentPidLinux(process.ppid);
+  if (parent != null) return parent;
+  return process.ppid;
+}
+function readParentPidLinux(pid) {
   try {
-    const stat = readFileSync9(`/proc/${process.ppid}/stat`, "utf-8");
+    const stat = readFileSync9(`/proc/${pid}/stat`, "utf-8");
     const closeParen = stat.lastIndexOf(")");
     if (closeParen > 0) {
       const parts = stat.slice(closeParen + 2).split(" ");
-      const grandparent = parseInt(parts[1], 10);
-      if (Number.isFinite(grandparent) && grandparent > 1) return grandparent;
+      const parent = parseInt(parts[1], 10);
+      if (Number.isFinite(parent) && parent > 1) return parent;
     }
   } catch {
   }
-  return process.ppid;
+  return null;
+}
+function readParentPidPosix(pid) {
+  try {
+    const out = execSync2(`ps -o ppid= -p ${pid}`, { encoding: "utf-8", timeout: 2e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    const parent = parseInt(out, 10);
+    if (Number.isFinite(parent) && parent > 1) return parent;
+  } catch {
+  }
+  return null;
+}
+function getOwnAncestorPids(maxDepth = 4) {
+  const chain = [];
+  const seen = /* @__PURE__ */ new Set();
+  let current = process.ppid;
+  if (process.platform === "win32") {
+    return getOwnAncestorPidsWindows(maxDepth);
+  }
+  for (let depth = 0; depth < maxDepth; depth++) {
+    if (!Number.isFinite(current) || current <= 1 || seen.has(current)) break;
+    chain.push(current);
+    seen.add(current);
+    const parent = process.platform === "linux" ? readParentPidLinux(current) : readParentPidPosix(current);
+    if (parent == null) break;
+    current = parent;
+  }
+  return chain.length > 0 ? chain : [process.ppid];
+}
+function getOwnAncestorPidsWindows(maxDepth) {
+  try {
+    const script = `$p=${process.ppid};$out=@();for($i=0;$i -lt ${maxDepth} -and $p -gt 1;$i++){$out+=$p;$p=(Get-CimInstance Win32_Process -Filter \\"ProcessId=$p\\" -ErrorAction SilentlyContinue).ParentProcessId};$out -join ','`;
+    const out = execSync2(`powershell -NoProfile -NonInteractive -Command "${script}"`, {
+      encoding: "utf-8",
+      timeout: 1e4,
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim();
+    const chain = out.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => Number.isFinite(n) && n > 1);
+    if (chain.length > 0) return chain;
+  } catch {
+  }
+  return [process.ppid];
 }
 function sessionsRoot(projectPath) {
   return join11(projectPath, AXME_CODE_DIR, SESSIONS_DIR);
@@ -37318,6 +37365,10 @@ var isWorkspace = serverHasGit ? false : serverWorkspace.type !== "single";
 var defaultProjectPath = serverCwd;
 var defaultWorkspacePath = isWorkspace ? serverCwd : null;
 var OWN_PPID = process.ppid;
+var OWN_ANCESTOR_PIDS = new Set(getOwnAncestorPids(4));
+function isOwnedMapping(ownerPpid) {
+  return ownerPpid != null && OWN_ANCESTOR_PIDS.has(ownerPpid);
+}
 var deliveredContext = /* @__PURE__ */ new Set();
 clearLegacyActiveSession(defaultProjectPath);
 clearLegacyPendingAuditsDir(defaultProjectPath);
@@ -37326,7 +37377,7 @@ backgroundAutoUpdate().catch(() => {
 void sendStartupEvents();
 function getOwnedSessionIdForLogging() {
   const all = listClaudeSessionMappings(defaultProjectPath);
-  const owned = all.filter((m) => m.ownerPpid === OWN_PPID);
+  const owned = all.filter((m) => isOwnedMapping(m.ownerPpid));
   if (owned.length > 0) return owned[0].axmeSessionId;
   for (const m of all) {
     if (m.ownerPpid != null && !isPidAlive(m.ownerPpid)) {
@@ -37346,7 +37397,7 @@ async function cleanupAndExit(reason) {
   cleanupRunning = true;
   try {
     const mappings = listClaudeSessionMappings(defaultProjectPath);
-    const owned = mappings.filter((m) => m.ownerPpid === OWN_PPID);
+    const owned = mappings.filter((m) => isOwnedMapping(m.ownerPpid));
     const claudeToAxme = /* @__PURE__ */ new Map();
     for (const m of owned) {
       const session = loadSession(defaultProjectPath, m.axmeSessionId);
@@ -38199,7 +38250,7 @@ async function main() {
 async function auditOrphansInBackground() {
   try {
     const ownedAxmeIds = new Set(
-      listClaudeSessionMappings(defaultProjectPath).filter((m) => m.ownerPpid === OWN_PPID).map((m) => m.axmeSessionId)
+      listClaudeSessionMappings(defaultProjectPath).filter((m) => isOwnedMapping(m.ownerPpid)).map((m) => m.axmeSessionId)
     );
     const orphans = findOrphanSessions(defaultProjectPath);
     for (const orphan of orphans) {
