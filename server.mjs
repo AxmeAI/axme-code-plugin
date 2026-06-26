@@ -6900,7 +6900,7 @@ var AXME_CODE_VERSION, AXME_CODE_DIR, DEFAULT_MODEL, DEFAULT_AUDITOR_MODEL, DEFA
 var init_types = __esm({
   "src/types.ts"() {
     "use strict";
-    AXME_CODE_VERSION = true ? "0.6.2" : "0.0.0-dev";
+    AXME_CODE_VERSION = true ? "0.6.3" : "0.0.0-dev";
     AXME_CODE_DIR = ".axme-code";
     DEFAULT_MODEL = "claude-sonnet-4-6";
     DEFAULT_AUDITOR_MODEL = "claude-sonnet-4-6";
@@ -37457,11 +37457,11 @@ function buildInstructions() {
   ];
   if (isWorkspace) {
     parts.push(`Workspace: ${defaultWorkspacePath} (${serverWorkspace.type}, ${serverWorkspace.projects.length} projects).`);
-    parts.push("Call axme_context at session start to load workspace overview. It returns compact meta and instructions to call axme_oracle, axme_decisions, axme_memories in parallel.");
+    parts.push("Call axme_context at session start to load workspace overview. It returns compact meta and instructions to call the READ tools axme_oracle, axme_decisions, axme_memories in parallel (parallelism is for those read tools only \u2014 see the save-tool rule below).");
     parts.push("Each repo has its own .axme-code/ storage initialized during setup.");
     parts.push("Before working with any specific repo, call axme_context with that repo's path.");
   } else {
-    parts.push("Call axme_context at session start. It returns compact meta and instructions to call axme_oracle, axme_decisions, axme_memories in parallel.");
+    parts.push("Call axme_context at session start. It returns compact meta and instructions to call the READ tools axme_oracle, axme_decisions, axme_memories in parallel (parallelism is for those read tools only \u2014 see the save-tool rule below).");
   }
   const axmeDirExists = existsSync10(join20(defaultProjectPath, ".axme-code"));
   if (!axmeDirExists) {
@@ -37483,6 +37483,7 @@ If you catch yourself writing "Save decision: X / Save memory: Y" as text, STOP 
   }
   parts.push("TRUNCATED OUTPUT RULE: if ANY MCP tool output is truncated or saved to a file (you see 'Output too large' or 'saved to file'), you MUST use the Read tool to read the full file content into your context. Do not proceed with partial data.");
   parts.push("Save memories, decisions, and safety rules immediately when discovered during work.");
+  parts.push("SAVE-TOOL RULE: call axme_save_memory / axme_save_decision / axme_update_safety ONE AT A TIME, each as a standalone call with ALL required fields composed in that same call. Do NOT place a save call in a parallel batch with other tool calls (parallelism is for the read tools only) and never emit a save call with empty/deferred arguments \u2014 that produces an 'expected string, received undefined' validation error for every required field.");
   parts.push('GIT COMMIT/PUSH GATE: every git commit and git push command MUST end with `#!axme pr=<NUMBER|none> repo=<OWNER/REPO>`. Example: `git commit -m "fix bug" #!axme pr=42 repo=AxmeAI/axme-code`. Use pr=none if no PR exists yet. Without this suffix the command will be blocked.');
   parts.push("RELEASE/TAG PROHIBITION: agent must NEVER run git tag, npm publish, twine upload, dotnet nuget push, mvn deploy, gh release create, or gh workflow run deploy-prod. These are blocked by safety hooks. To release: prepare version bump + CHANGELOG + PR, then provide ready-to-run tag/publish commands to the user.");
   parts.push("SESSION CLOSE: when the user asks to close/end the session (any language), call axme_begin_close to get the close checklist. Follow it: extract memories/decisions/safety (choosing correct scope for each), prepare handoff data, then call axme_finalize_close with everything. After finalize, output to the user: storage summary (what saved where), then startup_text.");
@@ -37658,12 +37659,12 @@ server.tool(
 );
 server.tool(
   "axme_save_memory",
-  "Save a feedback or pattern memory. Use 'feedback' for learned mistakes, 'pattern' for successful approaches.",
+  `Save a feedback or pattern memory. Use 'feedback' for learned mistakes, 'pattern' for successful approaches. Call this tool ON ITS OWN (do NOT batch it in a parallel block with other tool calls), and include type, title, and description in THIS SAME call. Worked example: { "type": "pattern", "title": "Retry npm publish via automation token", "description": "CI npm publish 404s when NPM_TOKEN is a non-automation granular token; regenerate as a Classic Automation token to bypass 2FA at publish." }`,
   {
     project_path: external_exports3.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
-    type: external_exports3.enum(["feedback", "pattern"]).describe("Memory type"),
-    title: external_exports3.string().describe("Short title"),
-    description: external_exports3.string().describe("1-2 sentences: what happened + specific action/command/rule. Must be self-contained without body."),
+    type: external_exports3.enum(["feedback", "pattern"], { error: 'type is REQUIRED \u2014 compose it in THIS call (one of "feedback" | "pattern"); do not emit axme_save_memory with empty arguments.' }).describe("Memory type"),
+    title: external_exports3.string({ error: "title is REQUIRED \u2014 compose it in THIS call. If you emitted the call expecting to fill params later, re-emit with title+type+description all present." }).describe("Short title"),
+    description: external_exports3.string({ error: "description is REQUIRED \u2014 compose it in THIS call (1-2 sentences, self-contained). An empty axme_save_memory call is the usual cause of this error: re-send with all three required fields." }).describe("1-2 sentences: what happened + specific action/command/rule. Must be self-contained without body."),
     body: external_exports3.string().optional().describe("Optional archive detail. Context output uses description only, so put all essential info there."),
     keywords: external_exports3.array(external_exports3.string()).optional().describe("Search keywords"),
     scope: external_exports3.array(external_exports3.string()).optional().describe("Project scope (omit for current project only)")
@@ -37680,12 +37681,12 @@ server.tool(
 );
 server.tool(
   "axme_save_decision",
-  "Save a new architectural decision. Use enforce='required' for rules that must be followed, 'advisory' for recommendations.",
+  "Save a new architectural decision. Use enforce='required' for rules that must be followed, 'advisory' for recommendations. Call this tool ON ITS OWN (do NOT batch it in a parallel block with other tool calls), and include title, decision, and reasoning in THIS SAME call.",
   {
     project_path: external_exports3.string().optional().describe("Absolute path to the project root (defaults to server cwd)"),
-    title: external_exports3.string().describe("Decision title"),
-    decision: external_exports3.string().describe("2-3 sentences: what was decided + why. Must be self-contained."),
-    reasoning: external_exports3.string().describe("Optional additional context. Context output uses decision field only."),
+    title: external_exports3.string({ error: "title is REQUIRED \u2014 compose it in THIS call; do not emit axme_save_decision with empty arguments." }).describe("Decision title"),
+    decision: external_exports3.string({ error: "decision is REQUIRED \u2014 compose it in THIS call (2-3 sentences, self-contained). An empty call is the usual cause of this error: re-send with title+decision+reasoning present." }).describe("2-3 sentences: what was decided + why. Must be self-contained."),
+    reasoning: external_exports3.string({ error: "reasoning is REQUIRED \u2014 compose it in THIS call. Re-emit with all required fields present." }).describe("Optional additional context. Context output uses decision field only."),
     enforce: external_exports3.enum(["required", "advisory"]).optional().describe("Enforcement level"),
     scope: external_exports3.array(external_exports3.string()).optional().describe("Project scope")
   },
